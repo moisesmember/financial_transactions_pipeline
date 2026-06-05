@@ -42,6 +42,24 @@ O código é tolerante a pequenas variações de nomes de colunas, mas espera um
 
 ## Como executar
 
+Crie e ative um ambiente virtual:
+
+Windows PowerShell:
+
+```bash
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+Linux/macOS:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+Instale as dependências e execute o projeto:
+
 ```bash
 pip install -r requirements.txt
 python main.py
