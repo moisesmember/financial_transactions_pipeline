@@ -14,6 +14,7 @@ src/data/                         # Carga, merge e split temporal
 src/features/                     # Limpeza, engenharia e preprocessing
 src/models/                       # Factory, treino, avaliação e threshold
 src/pipelines/                    # Orquestração de treino e predição
+src/storage/                      # Storage local e MinIO/S3
 src/api/                          # FastAPI e schemas
 tests/                            # Testes unitários
 ```
@@ -29,6 +30,52 @@ Baixe o dataset do Kaggle e coloque os arquivos em `data/raw`:
 - `train_fraud_labels.json`
 
 O código é tolerante a pequenas variações de nomes de colunas, mas espera uma coluna temporal nas transações e labels binárias de fraude.
+
+## Storage local ou MinIO
+
+Por padrão, o projeto usa arquivos locais em `data/raw` e salva artefatos em `artifacts`.
+
+Para usar MinIO como object store:
+
+1. Copie `.env.example` para `.env` ou exporte as variáveis no terminal.
+2. Configure:
+
+```bash
+STORAGE_BACKEND=minio
+MINIO_ENDPOINT=localhost:9000
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin
+MINIO_BUCKET=fraud-detection
+MINIO_SECURE=false
+RAW_DATA_PREFIX=data/raw
+ARTIFACTS_PREFIX=artifacts
+```
+
+3. Suba o MinIO local:
+
+```bash
+docker compose up -d minio
+```
+
+Console web do MinIO:
+
+```text
+http://localhost:9001
+```
+
+4. Coloque os arquivos do Kaggle em `data/raw` e envie para o bucket:
+
+```bash
+python scripts/upload_raw_to_minio.py
+```
+
+5. Treine lendo os dados do MinIO e salvando os artefatos também no bucket:
+
+```bash
+python main.py
+```
+
+Quando `STORAGE_BACKEND=minio`, a API e o serviço de predição tentam baixar `artifacts/fraud_pipeline.joblib` e `artifacts/model_metadata.joblib` do bucket se eles ainda não existirem localmente.
 
 ## Princípios de modelagem
 
