@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - keeps local imports working before dependency install
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Parse boolean environment variables."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 @dataclass(frozen=True)
@@ -23,6 +40,14 @@ class Settings:
     target_column: str = "is_fraud"
     pipeline_filename: str = "fraud_pipeline.joblib"
     metadata_filename: str = "model_metadata.joblib"
+    storage_backend: str = field(default_factory=lambda: os.getenv("STORAGE_BACKEND", "local"))
+    raw_data_prefix: str = field(default_factory=lambda: os.getenv("RAW_DATA_PREFIX", "data/raw"))
+    artifacts_prefix: str = field(default_factory=lambda: os.getenv("ARTIFACTS_PREFIX", "artifacts"))
+    minio_endpoint: str = field(default_factory=lambda: os.getenv("MINIO_ENDPOINT", "localhost:9000"))
+    minio_access_key: str = field(default_factory=lambda: os.getenv("MINIO_ACCESS_KEY", "minioadmin"))
+    minio_secret_key: str = field(default_factory=lambda: os.getenv("MINIO_SECRET_KEY", "minioadmin"))
+    minio_bucket: str = field(default_factory=lambda: os.getenv("MINIO_BUCKET", "fraud-detection"))
+    minio_secure: bool = field(default_factory=lambda: _env_bool("MINIO_SECURE", False))
 
     transaction_file_candidates: tuple[str, ...] = (
         "transactions_data.csv",
@@ -56,6 +81,9 @@ class Settings:
             object.__setattr__(self, "raw_data_dir", self.project_root / "data" / "raw")
         if self.artifacts_dir is None:
             object.__setattr__(self, "artifacts_dir", self.project_root / "artifacts")
+        object.__setattr__(self, "storage_backend", self.storage_backend.strip().lower())
+        object.__setattr__(self, "raw_data_prefix", self.raw_data_prefix.strip("/"))
+        object.__setattr__(self, "artifacts_prefix", self.artifacts_prefix.strip("/"))
 
     @property
     def pipeline_path(self) -> Path:
@@ -66,6 +94,24 @@ class Settings:
     def metadata_path(self) -> Path:
         """Path where threshold and metrics metadata are stored."""
         return self.artifacts_dir / self.metadata_filename
+
+    def raw_object_key(self, filename: str) -> str:
+        """Return the object key for a raw dataset file."""
+        return f"{self.raw_data_prefix}/{filename}".strip("/")
+
+    def artifact_object_key(self, filename: str) -> str:
+        """Return the object key for a model artifact."""
+        return f"{self.artifacts_prefix}/{filename}".strip("/")
+
+    @property
+    def pipeline_object_key(self) -> str:
+        """Object key for the fitted sklearn pipeline."""
+        return self.artifact_object_key(self.pipeline_filename)
+
+    @property
+    def metadata_object_key(self) -> str:
+        """Object key for threshold and metrics metadata."""
+        return self.artifact_object_key(self.metadata_filename)
 
     @property
     def model_params(self) -> dict[str, dict[str, Any]]:

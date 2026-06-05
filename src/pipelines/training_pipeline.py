@@ -16,6 +16,7 @@ from src.features.cleaning import FraudDataCleaner
 from src.models.evaluate import evaluate_binary_classifier
 from src.models.threshold import find_best_threshold
 from src.models.train import FraudModelTrainer
+from src.storage.sync import StorageSyncService
 from src.utils.logger import get_logger
 
 
@@ -89,6 +90,7 @@ class TrainingPipeline:
         }
         joblib.dump(metadata, self.settings.metadata_path)
         logger.info("Pipeline e metadados salvos em %s", self.settings.artifacts_dir)
+        StorageSyncService(self.settings).upload_artifacts()
 
         return TrainingResult(
             model_name=self.settings.model_name,
