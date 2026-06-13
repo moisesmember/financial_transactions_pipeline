@@ -114,6 +114,25 @@ pytest
 uvicorn src.api.app:app --reload
 ```
 
+## Jupyter
+
+Com o ambiente virtual ativado, instale as dependências do projeto:
+
+```bash
+pip install -r requirements.txt
+```
+
+Inicie o JupyterLab na raiz do projeto:
+
+```bash
+python -m jupyter lab
+```
+
+O navegador abrirá a interface do JupyterLab. Ao criar ou abrir um notebook,
+selecione o kernel Python do ambiente virtual `.venv`.
+
+Para encerrar o servidor, pressione `Ctrl+C` no terminal.
+
 ## Predição em batch
 
 ```python
