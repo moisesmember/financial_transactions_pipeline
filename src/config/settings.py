@@ -48,6 +48,21 @@ class Settings:
     minio_secret_key: str = field(default_factory=lambda: os.getenv("MINIO_SECRET_KEY", "minioadmin"))
     minio_bucket: str = field(default_factory=lambda: os.getenv("MINIO_BUCKET", "fraud-detection"))
     minio_secure: bool = field(default_factory=lambda: _env_bool("MINIO_SECURE", False))
+    kaggle_dataset: str = field(
+        default_factory=lambda: os.getenv(
+            "KAGGLE_DATASET",
+            "computingvictor/transactions-fraud-datasets",
+        )
+    )
+    kaggle_overwrite: bool = field(default_factory=lambda: _env_bool("KAGGLE_OVERWRITE", False))
+    kaggle_auto_import: bool = field(default_factory=lambda: _env_bool("KAGGLE_AUTO_IMPORT", False))
+    kaggle_expected_files: tuple[str, ...] = (
+        "transactions_data.csv",
+        "cards_data.csv",
+        "users_data.csv",
+        "mcc_codes.json",
+        "train_fraud_labels.json",
+    )
 
     transaction_file_candidates: tuple[str, ...] = (
         "transactions_data.csv",
@@ -84,6 +99,7 @@ class Settings:
         object.__setattr__(self, "storage_backend", self.storage_backend.strip().lower())
         object.__setattr__(self, "raw_data_prefix", self.raw_data_prefix.strip("/"))
         object.__setattr__(self, "artifacts_prefix", self.artifacts_prefix.strip("/"))
+        object.__setattr__(self, "kaggle_dataset", self.kaggle_dataset.strip().strip("/"))
 
     @property
     def pipeline_path(self) -> Path:

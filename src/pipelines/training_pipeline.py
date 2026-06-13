@@ -13,6 +13,7 @@ from src.data.load_data import RawDataRepository
 from src.data.merge_data import FraudDataMerger
 from src.data.split_data import TemporalSplitter
 from src.features.cleaning import FraudDataCleaner
+from src.ingestion.import_service import DatasetImportService
 from src.models.evaluate import evaluate_binary_classifier
 from src.models.threshold import find_best_threshold
 from src.models.train import FraudModelTrainer
@@ -44,6 +45,8 @@ class TrainingPipeline:
     def run(self) -> TrainingResult:
         """Load data, merge, split, train, tune threshold, evaluate and persist."""
         self.settings.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        if self.settings.kaggle_auto_import:
+            DatasetImportService(self.settings).import_data()
 
         repository = RawDataRepository(self.settings)
         raw = repository.load_all()

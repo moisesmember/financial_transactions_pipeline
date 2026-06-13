@@ -19,9 +19,54 @@ src/api/                          # FastAPI e schemas
 tests/                            # Testes unitários
 ```
 
-## Dados esperados
+## Importação dos dados do Kaggle
 
-Baixe o dataset do Kaggle e coloque os arquivos em `data/raw`:
+O projeto baixa automaticamente o dataset pela CLI oficial do Kaggle e grava os
+arquivos diretamente no storage configurado, local ou MinIO.
+
+Os arquivos importados em `data/raw` não devem ser versionados no Git. Esse
+diretório está no `.gitignore`; somente o código de importação e as instruções
+para reproduzir o download fazem parte do repositório.
+
+Gere um token em `https://www.kaggle.com/settings/api` e configure no `.env`:
+
+```bash
+KAGGLE_API_TOKEN=seu_token
+KAGGLE_DATASET=computingvictor/transactions-fraud-datasets
+KAGGLE_OVERWRITE=false
+```
+
+Com `STORAGE_BACKEND=local`, execute:
+
+```bash
+python -m scripts.import_kaggle_data
+```
+
+Com `STORAGE_BACKEND=minio`, inicie o MinIO e execute o mesmo comando:
+
+```bash
+docker compose up -d minio
+python -m scripts.import_kaggle_data
+```
+
+Por padrão, arquivos existentes não são alterados. Para substituí-los apenas
+nessa execução:
+
+```bash
+python -m scripts.import_kaggle_data --overwrite
+```
+
+Também é possível definir `KAGGLE_OVERWRITE=true`. O argumento
+`--no-overwrite` desativa a substituição para uma execução.
+
+Para importar automaticamente antes de cada treinamento, configure:
+
+```bash
+KAGGLE_AUTO_IMPORT=true
+```
+
+Quando todos os arquivos esperados já existem e `KAGGLE_OVERWRITE=false`, o
+download é ignorado. Os arquivos esperados são:
 
 - `transactions_data.csv`
 - `cards_data.csv`
@@ -63,10 +108,10 @@ Console web do MinIO:
 http://localhost:9001
 ```
 
-4. Coloque os arquivos do Kaggle em `data/raw` e envie para o bucket:
+4. Importe o dataset diretamente para o bucket:
 
 ```bash
-python scripts/upload_raw_to_minio.py
+python -m scripts.import_kaggle_data
 ```
 
 5. Treine lendo os dados do MinIO e salvando os artefatos também no bucket:
