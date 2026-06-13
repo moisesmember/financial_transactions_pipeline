@@ -38,6 +38,20 @@ class FraudFeatureEngineer(BaseEstimator, TransformerMixin):
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Create deterministic features from current data and fitted history."""
+        return self._transform(X, include_history=True)
+
+    def fit_transform(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series | None = None,
+        **fit_params,
+    ) -> pd.DataFrame:
+        """Fit and transform training rows without prepending them as history."""
+        self.fit(X, y)
+        return self._transform(X, include_history=False)
+
+    def _transform(self, X: pd.DataFrame, include_history: bool) -> pd.DataFrame:
+        """Create features, optionally using fitted rows as prior history."""
         df = pd.DataFrame(X).copy()
         if self.time_column_ and self.time_column_ in df.columns:
             df[self.time_column_] = pd.to_datetime(df[self.time_column_], errors="coerce")
@@ -49,7 +63,7 @@ class FraudFeatureEngineer(BaseEstimator, TransformerMixin):
             df["amount_log1p"] = np.log1p(amount.abs())
 
         if self.group_column_ and self.group_column_ in df.columns and self.amount_column_ in df.columns:
-            df = self._add_behavior_features(df)
+            df = self._add_behavior_features(df, include_history=include_history)
 
         return df
 
@@ -64,7 +78,7 @@ class FraudFeatureEngineer(BaseEstimator, TransformerMixin):
         df["is_night"] = dt.dt.hour.between(0, 5).astype("int64")
         return df
 
-    def _add_behavior_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _add_behavior_features(self, df: pd.DataFrame, include_history: bool = True) -> pd.DataFrame:
         """Add lagged amount statistics using only previous transactions."""
         time_col = self.time_column_
         amount_col = self.amount_column_
@@ -77,7 +91,7 @@ class FraudFeatureEngineer(BaseEstimator, TransformerMixin):
         work[amount_col] = pd.to_numeric(work[amount_col], errors="coerce")
         history = self.history_
 
-        if history is not None and not history.empty:
+        if include_history and history is not None and not history.empty:
             hist = history.copy()
             hist["_is_history"] = 1
             hist["_original_order"] = -1

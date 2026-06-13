@@ -35,6 +35,7 @@ def test_feature_engineering_uses_previous_amount_only() -> None:
     assert pd.isna(engineered.loc[0, "previous_amount"])
     assert engineered.loc[1, "previous_amount"] == 10.0
     assert engineered.loc[2, "amount_mean_5_prev"] == 15.0
+    assert engineered["transactions_seen_before"].tolist() == [0, 1, 2]
 
 
 def test_preprocessor_drops_raw_ids() -> None:

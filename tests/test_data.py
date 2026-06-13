@@ -5,6 +5,7 @@ from __future__ import annotations
 import pandas as pd
 
 from src.config.settings import Settings
+from src.data.limit_data import TrainingDataLimiter
 from src.data.merge_data import FraudDataMerger
 from src.data.split_data import TemporalSplitter
 
@@ -50,3 +51,13 @@ def test_temporal_split_preserves_order() -> None:
 
     assert splits.train["date"].max() < splits.validation["date"].min()
     assert splits.validation["date"].max() < splits.test["date"].min()
+
+
+def test_training_data_limiter_preserves_source_order() -> None:
+    """Training row limits should be applied before expensive processing."""
+    transactions = pd.DataFrame({"id": range(10), "amount": range(10)})
+
+    limited = TrainingDataLimiter(max_rows=4).apply(transactions)
+
+    assert limited["id"].tolist() == [0, 1, 2, 3]
+    assert len(transactions) == 10

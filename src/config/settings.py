@@ -24,6 +24,20 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _env_optional_positive_int(name: str, default: int | None = None) -> int | None:
+    """Parse a positive integer, treating empty or zero as unlimited."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip()
+    if not normalized or normalized == "0":
+        return None
+    parsed = int(normalized)
+    if parsed < 0:
+        raise ValueError(f"{name} deve ser um inteiro positivo ou 0.")
+    return parsed
+
+
 @dataclass(frozen=True)
 class Settings:
     """Centralized configuration for paths, data columns and modeling."""
@@ -37,6 +51,9 @@ class Settings:
     test_size: float = 0.15
     threshold_beta: float = 2.0
     min_precision_for_threshold: float = 0.05
+    training_max_rows: int | None = field(
+        default_factory=lambda: _env_optional_positive_int("TRAINING_MAX_ROWS", 500_000)
+    )
     target_column: str = "is_fraud"
     pipeline_filename: str = "fraud_pipeline.joblib"
     metadata_filename: str = "model_metadata.joblib"

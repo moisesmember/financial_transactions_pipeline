@@ -9,6 +9,7 @@ import joblib
 import pandas as pd
 
 from src.config.settings import Settings
+from src.data.limit_data import TrainingDataLimiter
 from src.data.load_data import RawDataRepository
 from src.data.merge_data import FraudDataMerger
 from src.data.split_data import TemporalSplitter
@@ -50,6 +51,7 @@ class TrainingPipeline:
 
         repository = RawDataRepository(self.settings)
         raw = repository.load_all()
+        raw["transactions"] = TrainingDataLimiter(self.settings.training_max_rows).apply(raw["transactions"])
         merged = FraudDataMerger(self.settings).merge(
             transactions=raw["transactions"],
             cards=raw["cards"],
@@ -57,6 +59,7 @@ class TrainingPipeline:
             mcc_codes=raw["mcc"],
             labels=raw["labels"],
         )
+        del raw
 
         cleaned_for_split = FraudDataCleaner(self.settings).fit_transform(merged)
         splits = TemporalSplitter(self.settings).split(cleaned_for_split)
@@ -90,6 +93,7 @@ class TrainingPipeline:
             "validation_metrics": validation_metrics,
             "test_metrics": test_metrics,
             "time_column": splits.time_column,
+            "training_max_rows": self.settings.training_max_rows,
         }
         joblib.dump(metadata, self.settings.metadata_path)
         logger.info("Pipeline e metadados salvos em %s", self.settings.artifacts_dir)

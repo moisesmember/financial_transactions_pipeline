@@ -159,6 +159,23 @@ pytest
 uvicorn src.api.app:app --reload
 ```
 
+Por padrão, `python main.py` limita a `500000` as transações usadas no merge e
+no treino, evitando esgotar a memória nas etapas mais pesadas em ambientes
+locais. Ajuste no `.env` conforme a RAM disponível:
+
+```bash
+TRAINING_MAX_ROWS=200000
+```
+
+Para tentar processar o dataset completo, sem limite:
+
+```bash
+TRAINING_MAX_ROWS=0
+```
+
+O dataset completo exige significativamente mais memória e pode não ser
+adequado para treinamento local com scikit-learn.
+
 ## Jupyter
 
 Com o ambiente virtual ativado, instale as dependências do projeto:

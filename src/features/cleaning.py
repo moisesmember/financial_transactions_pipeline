@@ -25,7 +25,7 @@ class FraudDataCleaner(BaseEstimator, TransformerMixin):
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         """Return a cleaned dataframe with normalized columns and parsed values."""
-        df = normalize_columns(pd.DataFrame(X).copy())
+        df = normalize_columns(pd.DataFrame(X))
         df = df.replace({"": np.nan, "nan": np.nan, "None": np.nan})
 
         amount_col = first_existing(df.columns, self.settings.amount_candidates)
