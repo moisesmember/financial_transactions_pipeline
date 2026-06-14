@@ -123,3 +123,23 @@ class TrainingJobResponse(BaseModel):
     configuration: dict[str, Any]
     result: dict[str, Any] | None = None
     error: str | None = None
+
+
+class TrainingReportResponse(BaseModel):
+    """Transparent governed report for one completed model training run."""
+
+    run_id: str
+    generated_at: datetime
+    executive_summary: list[str]
+    run: dict[str, Any]
+    model: dict[str, Any]
+    dataset: dict[str, Any]
+    performance: dict[str, Any]
+    features: dict[str, Any]
+    audit: dict[str, Any]
+    model_search: dict[str, Any]
+    external_benchmarks: list[dict[str, Any]]
+    robustness_experiments: list[dict[str, Any]]
+    threshold_analysis: dict[str, Any]
+    artifacts: dict[str, Any]
+    baseline: dict[str, Any]

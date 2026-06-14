@@ -85,6 +85,7 @@ def test_leakage_audit_flags_snapshot_and_high_auc(tmp_path) -> None:
     assert report["status"] == "warning"
     assert report["checks"]["temporal_order_valid"] is True
     assert report["risk_columns"]["snapshot"] == ["card_on_dark_web"]
+    assert report["excluded_input_columns"] == ["date", "transaction_id"]
     assert report["checks"]["high_roc_auc_warning"] is True
 
 

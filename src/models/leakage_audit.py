@@ -58,6 +58,7 @@ class LeakageAuditService:
         )
         duplicate_ids = self._duplicate_ids(splits)
         selected_columns = self._selected_input_columns(pipeline)
+        excluded_columns = self._excluded_input_columns(pipeline)
         snapshot_risks = sorted(selected_columns & SNAPSHOT_RISK_COLUMNS)
         post_event_risks = sorted(selected_columns & POST_EVENT_RISK_COLUMNS)
         sensitive_risks = sorted(selected_columns & SENSITIVE_COLUMNS)
@@ -166,6 +167,7 @@ class LeakageAuditService:
                 ),
             },
             "selected_input_columns": sorted(selected_columns),
+            "excluded_input_columns": sorted(excluded_columns),
             "top_model_features": top_model_features,
             "risk_columns": {
                 "snapshot": snapshot_risks,
@@ -226,6 +228,16 @@ class LeakageAuditService:
                 continue
             selected.update(str(column) for column in columns)
         return selected
+
+    @staticmethod
+    def _excluded_input_columns(pipeline: Any) -> set[str]:
+        """Return columns explicitly dropped by the fitted preprocessor."""
+        preprocessor = pipeline.named_steps["preprocessor"]
+        excluded: set[str] = set()
+        for name, _, columns in preprocessor.transformers_:
+            if name == "drop":
+                excluded.update(str(column) for column in columns)
+        return excluded
 
     @staticmethod
     def _top_model_features(pipeline: Any, limit: int = 20) -> list[dict[str, float | str]]:

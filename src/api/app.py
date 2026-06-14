@@ -13,8 +13,10 @@ from src.api.schemas import (
     PredictionRequest,
     PredictionResponse,
     TrainingJobResponse,
+    TrainingReportResponse,
     TrainingRequest,
 )
+from src.api.training_report import build_training_report
 from src.api.training_service import (
     TrainingAlreadyRunningError,
     TrainingJobManager,
@@ -27,6 +29,11 @@ from src.storage.model_run_fact_repository import (
     ModelRunFactRepository,
     ModelRunFactRepositoryError,
     ModelRunFactViewNotFoundError,
+)
+from src.storage.training_report_repository import (
+    TrainingReportNotFoundError,
+    TrainingReportRepository,
+    TrainingReportRepositoryError,
 )
 
 
@@ -49,6 +56,12 @@ def get_model_run_fact_repository() -> ModelRunFactRepository:
 def get_training_job_manager() -> TrainingJobManager:
     """Create the process-local manager for resource-intensive training jobs."""
     return TrainingJobManager(on_complete=get_prediction_service.cache_clear)
+
+
+@lru_cache(maxsize=1)
+def get_training_report_repository() -> TrainingReportRepository:
+    """Create the repository used by transparent training reports."""
+    return TrainingReportRepository(Settings())
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -110,6 +123,43 @@ def get_training_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Treinamento nao encontrado: {job_id}.",
+        ) from exc
+
+
+@app.get(
+    "/training-runs/{run_id}/report",
+    response_model=TrainingReportResponse,
+    summary="Get a transparent governed training report",
+)
+def get_training_report(
+    run_id: str,
+    repository: Annotated[
+        TrainingReportRepository,
+        Depends(get_training_report_repository),
+    ],
+    feature_limit: Annotated[int, Query(ge=1, le=500)] = 50,
+) -> TrainingReportResponse:
+    """Explain model performance, features, exclusions, search and audit data."""
+    try:
+        data = repository.get(run_id=run_id, feature_limit=feature_limit)
+        return TrainingReportResponse.model_validate(build_training_report(data))
+    except TrainingReportNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Treinamento nao encontrado: {run_id}.",
+        ) from exc
+    except ModelRunFactViewNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                f"{exc} Execute `python -m scripts.migrate_database upgrade` "
+                "antes de usar esta rota."
+            ),
+        ) from exc
+    except TrainingReportRepositoryError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="PostgreSQL indisponivel para gerar o report do treinamento.",
         ) from exc
 
 

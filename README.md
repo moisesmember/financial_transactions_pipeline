@@ -590,6 +590,32 @@ executar por processo da API. Cada job usa staging isolado em
 produção, proteja essa rota com autenticação e execute a API com um único worker
 ou substitua o gerenciador em memória por uma fila distribuída.
 
+Para consultar um relatório transparente de um treinamento concluído:
+
+```bash
+curl "http://localhost:8000/training-runs/RUN_ID/report?feature_limit=50"
+```
+
+O report consolida:
+
+- resumo executivo e decisão de baseline;
+- modelo selecionado, parâmetros, ranking e famílias consideradas;
+- tamanho e taxa positiva dos splits temporais;
+- precision, recall, F1, F-beta, PR-AUC, ROC-AUC, matriz de confusão,
+  alert rate e custo de negócio;
+- degradação entre validação, teste e out-of-time;
+- features utilizadas, pesos/importâncias, direção e grupo;
+- features desconsideradas, política de exclusão e colunas de risco;
+- checks, warnings, falhas e recomendações da auditoria de leakage;
+- trials do Optuna, benchmarks externos e experimentos de robustez;
+- análise de thresholds, artefatos e histórico de promoção.
+
+Use `feature_limit` entre 1 e 500 para controlar quantas features ordenadas por
+importância são retornadas. A importância é interna ao modelo e não representa
+causalidade. Runs antigos podem não possuir a lista exata de colunas excluídas;
+nesse caso, a resposta marca `legacy_run_policy_only` e apresenta a política que
+foi aplicada.
+
 Para exportar em JSON todas as colunas da view
 `fraud_tracking.fact_model_runs`:
 

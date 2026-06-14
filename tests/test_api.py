@@ -12,6 +12,7 @@ from src.api.app import (
     app,
     get_model_run_fact_repository,
     get_training_job_manager,
+    get_training_report_repository,
 )
 from src.api.schemas import TrainingRequest
 from src.api.training_service import (
@@ -23,6 +24,10 @@ from src.config.settings import Settings
 from src.storage.model_run_fact_repository import (
     ModelRunFactRepositoryError,
     ModelRunFactViewNotFoundError,
+)
+from src.storage.training_report_repository import (
+    TrainingReportNotFoundError,
+    TrainingReportRepositoryError,
 )
 
 
@@ -80,6 +85,100 @@ class _BusyTrainingJobManager:
 class _MissingTrainingJobManager:
     def get(self, job_id: str):
         raise TrainingJobNotFoundError(job_id)
+
+
+class _FakeTrainingReportRepository:
+    def get(self, run_id: str, feature_limit: int):
+        assert run_id == "run-1"
+        assert feature_limit == 10
+        return {
+            "run": {
+                "run_id": "run-1",
+                "status": "rejected",
+                "model_name": "xgboost",
+                "selected_threshold": 0.1,
+                "threshold_strategy": "business_cost",
+                "false_positive_cost": 1,
+                "false_negative_cost": 25,
+                "audit_status": "warning",
+                "audit_warning_count": 1,
+                "audit_failure_count": 0,
+                "strict_leakage_prevention": True,
+                "promotion_decision": "reject",
+                "promotion_reason": ["PR-AUC OOT baixo"],
+                "validation_pr_auc": 0.6,
+                "test_pr_auc": 0.2,
+                "out_of_time_pr_auc": 0.1,
+                "metadata": {
+                    "model_params": {"max_depth": 4},
+                    "time_column": "date",
+                },
+                "leakage_audit": {
+                    "selected_input_columns": ["amount", "merchant_state"],
+                    "excluded_input_columns": ["transaction_id", "date"],
+                    "risk_columns": {
+                        "snapshot": [],
+                        "post_event": [],
+                        "sensitive": [],
+                    },
+                    "warnings": ["Drift geografico"],
+                    "failures": [],
+                    "recommendations": ["Executar ablation"],
+                },
+                "threshold_evaluation_count": 1,
+                "threshold_evaluations": [{"threshold": 0.1, "split": "validation"}],
+                "artifact_count": 1,
+                "artifact_total_size_bytes": 100,
+                "artifacts": [{"artifact_type": "pipeline", "uri": "minio://pipeline"}],
+                "baseline_promotion_count": 0,
+                "is_active_baseline": False,
+            },
+            "feature_count": 2,
+            "features": [
+                {
+                    "feature_name": "amount",
+                    "importance": 0.7,
+                    "absolute_importance": 0.7,
+                    "direction": "positive",
+                    "odds_ratio": None,
+                    "feature_group": "risk",
+                    "is_geo_feature": False,
+                    "is_temporal_feature": False,
+                    "is_behavioral_feature": False,
+                    "is_risk_feature": True,
+                }
+            ],
+            "audit_checks": [
+                {
+                    "check_name": "temporal_order",
+                    "check_result": "pass",
+                    "severity": "critical",
+                    "message": None,
+                    "recommendation": None,
+                }
+            ],
+            "search_trials": [
+                {
+                    "trial_number": 1,
+                    "state": "COMPLETE",
+                    "model_name": "xgboost",
+                    "model_params": {"max_depth": 4},
+                    "validation_pr_auc": 0.6,
+                }
+            ],
+            "benchmarks": [{"backend": "autogluon", "split": "validation"}],
+            "robustness": [],
+        }
+
+
+class _MissingTrainingReportRepository:
+    def get(self, run_id: str, feature_limit: int):
+        raise TrainingReportNotFoundError(run_id)
+
+
+class _UnavailableTrainingReportRepository:
+    def get(self, run_id: str, feature_limit: int):
+        raise TrainingReportRepositoryError("database unavailable")
 
 
 def test_export_model_runs_returns_paginated_json() -> None:
@@ -259,3 +358,47 @@ def test_training_job_manager_resolves_defaults_and_uses_isolated_staging(
     assert job["configuration"]["training_max_rows"] == 123
     assert captured["settings"].artifacts_dir.parent.name == job["job_id"]
     assert completed == [True]
+
+
+def test_training_report_returns_transparent_sections() -> None:
+    app.dependency_overrides[
+        get_training_report_repository
+    ] = _FakeTrainingReportRepository
+    try:
+        response = TestClient(app).get("/training-runs/run-1/report?feature_limit=10")
+    finally:
+        app.dependency_overrides.clear()
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["model"]["name"] == "xgboost"
+    assert payload["features"]["top_features"][0]["feature_name"] == "amount"
+    assert payload["features"]["excluded_input_columns"] == ["transaction_id", "date"]
+    assert payload["performance"]["generalization"]["warning"] is True
+    assert payload["audit"]["recommendations"] == ["Executar ablation"]
+    assert payload["external_benchmarks"][0]["backend"] == "autogluon"
+    assert "causalidade" in payload["features"]["importance_note"]
+
+
+def test_training_report_returns_404_for_unknown_run() -> None:
+    app.dependency_overrides[
+        get_training_report_repository
+    ] = _MissingTrainingReportRepository
+    try:
+        response = TestClient(app).get("/training-runs/unknown/report")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+
+
+def test_training_report_returns_503_when_database_is_unavailable() -> None:
+    app.dependency_overrides[
+        get_training_report_repository
+    ] = _UnavailableTrainingReportRepository
+    try:
+        response = TestClient(app).get("/training-runs/run-1/report")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
