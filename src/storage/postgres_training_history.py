@@ -175,7 +175,11 @@ class PostgresTrainingHistoryRepository:
                 "out_of_time_positive_rate": dataset.get("out_of_time_positive_rate"),
                 "strict_leakage_prevention": historical_metadata["strict_leakage_prevention"],
                 "pipeline_sha256": run["pipeline_sha256"],
-                "run_directory": run_dir.relative_to(self.settings.artifacts_dir).as_posix(),
+                "run_directory": self.settings.object_uri(
+                    self.settings.artifact_object_key(
+                        run_dir.relative_to(self.settings.artifacts_dir).as_posix()
+                    )
+                ),
                 "metadata": historical_metadata,
                 "leakage_audit": leakage_report,
                 "status": historical_metadata.get("status", "completed"),
@@ -308,11 +312,14 @@ class PostgresTrainingHistoryRepository:
         table = metadata.tables[f"{SCHEMA}.run_artifacts"]
         rows = []
         for path in sorted(item for item in run_dir.iterdir() if item.is_file()):
+            relative_path = path.relative_to(self.settings.artifacts_dir).as_posix()
             rows.append(
                 {
                     "run_id": run_id,
                     "artifact_type": self._artifact_type(path),
-                    "uri": path.relative_to(self.settings.project_root).as_posix(),
+                    "uri": self.settings.object_uri(
+                        self.settings.artifact_object_key(relative_path)
+                    ),
                     "sha256": self._sha256(path),
                     "size_bytes": path.stat().st_size,
                 }
@@ -505,7 +512,7 @@ class PostgresTrainingHistoryRepository:
                 )
         if not rows:
             return
-        statement = insert(table).values(rows)
+        statement = insert(table).values(self._uniform_rows(table, rows))
         connection.execute(
             statement.on_conflict_do_update(
                 index_elements=["run_id", "backend", "split"],
@@ -602,3 +609,16 @@ class PostgresTrainingHistoryRepository:
     def _supported_values(table, values: dict[str, Any]) -> dict[str, Any]:
         """Filter payloads to columns available in the migrated database."""
         return {key: value for key, value in values.items() if key in table.c}
+
+    @staticmethod
+    def _uniform_rows(table, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Fill optional columns so SQLAlchemy can execute a heterogeneous bulk insert."""
+        column_names = [
+            column.name
+            for column in table.columns
+            if column.server_default is None or any(column.name in row for row in rows)
+        ]
+        return [
+            {column_name: row.get(column_name) for column_name in column_names}
+            for row in rows
+        ]

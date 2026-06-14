@@ -172,6 +172,44 @@ def test_postgres_history_persistence_can_be_disabled(tmp_path) -> None:
     assert persisted is False
 
 
+def test_postgres_external_benchmark_rows_are_uniform() -> None:
+    from sqlalchemy import Column, Float, MetaData, String, Table, text
+
+    table = Table(
+        "external_benchmark_results",
+        MetaData(),
+        Column("run_id", String),
+        Column("backend", String),
+        Column("split", String),
+        Column("status", String),
+        Column("threshold", Float),
+        Column("created_at", String, server_default=text("CURRENT_TIMESTAMP")),
+    )
+
+    rows = PostgresTrainingHistoryRepository._uniform_rows(
+        table,
+        [
+            {
+                "run_id": "run-1",
+                "backend": "xgboost",
+                "split": "validation",
+                "status": "completed",
+                "threshold": 0.1,
+            },
+            {
+                "run_id": "run-1",
+                "backend": "autogluon",
+                "split": "summary",
+                "status": "completed",
+            },
+        ],
+    )
+
+    assert rows[1]["threshold"] is None
+    assert set(rows[0]) == set(rows[1])
+    assert "created_at" not in rows[0]
+
+
 def test_database_url_is_built_from_postgres_settings(tmp_path) -> None:
     settings = Settings(
         project_root=tmp_path,
@@ -185,6 +223,18 @@ def test_database_url_is_built_from_postgres_settings(tmp_path) -> None:
 
     assert settings.database_url == (
         "postgresql+psycopg://user%40example:secret+value@db:5433/tracking"
+    )
+
+
+def test_minio_object_uri_is_used_for_persistent_artifacts(tmp_path) -> None:
+    settings = Settings(
+        project_root=tmp_path,
+        storage_backend="minio",
+        minio_bucket="fraud-models",
+    )
+
+    assert settings.object_uri("artifacts/history/run-1/metadata.json") == (
+        "minio://fraud-models/artifacts/history/run-1/metadata.json"
     )
 
 

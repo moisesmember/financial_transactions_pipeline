@@ -217,6 +217,12 @@ class Settings:
     minio_secret_key: str = field(default_factory=lambda: os.getenv("MINIO_SECRET_KEY", "minioadmin"))
     minio_bucket: str = field(default_factory=lambda: os.getenv("MINIO_BUCKET", "fraud-detection"))
     minio_secure: bool = field(default_factory=lambda: _env_bool("MINIO_SECURE", False))
+    keep_local_artifacts: bool = field(
+        default_factory=lambda: _env_bool("KEEP_LOCAL_ARTIFACTS", True)
+    )
+    keep_local_raw_data: bool = field(
+        default_factory=lambda: _env_bool("KEEP_LOCAL_RAW_DATA", True)
+    )
     kaggle_dataset: str = field(
         default_factory=lambda: os.getenv(
             "KAGGLE_DATASET",
@@ -277,6 +283,15 @@ class Settings:
         )
         if self.model_selection_engine not in {"fixed", "optuna"}:
             raise ValueError("MODEL_SELECTION_ENGINE deve ser 'fixed' ou 'optuna'.")
+        if self.storage_backend not in {"local", "minio"}:
+            raise ValueError("STORAGE_BACKEND deve ser 'local' ou 'minio'.")
+        if self.storage_backend == "local" and (
+            not self.keep_local_artifacts or not self.keep_local_raw_data
+        ):
+            raise ValueError(
+                "KEEP_LOCAL_ARTIFACTS e KEEP_LOCAL_RAW_DATA devem ser true "
+                "quando STORAGE_BACKEND=local."
+            )
         supported_models = set(self.model_params)
         if self.model_name not in supported_models:
             raise ValueError(f"MODEL_NAME nao suportado: {self.model_name}.")
@@ -400,6 +415,12 @@ class Settings:
     def artifact_object_key(self, filename: str) -> str:
         """Return the object key for a model artifact."""
         return f"{self.artifacts_prefix}/{filename}".strip("/")
+
+    def object_uri(self, key: str) -> str:
+        """Return the persistent URI for an object key."""
+        if self.storage_backend == "minio":
+            return f"minio://{self.minio_bucket}/{key.lstrip('/')}"
+        return (self.project_root / key).resolve().as_uri()
 
     @property
     def pipeline_object_key(self) -> str:

@@ -7,6 +7,7 @@ import argparse
 import pandas as pd
 
 from src.config.settings import Settings
+from src.storage.factory import create_object_store
 
 
 METRICS = (
@@ -28,10 +29,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Print the most relevant fields from the history comparison index."""
     args = parse_args()
-    path = Settings().training_history_index_path
-    if not path.exists():
-        raise FileNotFoundError("Nenhum historico de treinamento foi encontrado.")
-    history = pd.read_csv(path).sort_values(args.sort_by, ascending=False).head(args.limit)
+    settings = Settings()
+    if settings.storage_backend == "minio":
+        key = settings.artifact_object_key("history/runs.csv")
+        store = create_object_store(settings)
+        if not store.exists(key):
+            raise FileNotFoundError("Nenhum historico de treinamento foi encontrado.")
+        history = store.read_csv(key)
+    else:
+        path = settings.training_history_index_path
+        if not path.exists():
+            raise FileNotFoundError("Nenhum historico de treinamento foi encontrado.")
+        history = pd.read_csv(path)
+    history = history.sort_values(args.sort_by, ascending=False).head(args.limit)
     columns = [
         "run_id",
         "model_name",

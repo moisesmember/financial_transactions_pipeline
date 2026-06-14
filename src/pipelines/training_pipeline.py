@@ -72,7 +72,9 @@ class TrainingPipeline:
     def run(self) -> TrainingResult:
         """Load data, merge, split, train, tune threshold, evaluate and persist."""
         started_at = datetime.now(timezone.utc)
+        storage_sync = StorageSyncService(self.settings)
         self.settings.artifacts_dir.mkdir(parents=True, exist_ok=True)
+        storage_sync.prepare_artifact_workspace()
         if self.settings.kaggle_auto_import:
             DatasetImportService(self.settings).import_data()
 
@@ -510,7 +512,8 @@ class TrainingPipeline:
                 )
             else:
                 baseline_registry.commit_promotion()
-        StorageSyncService(self.settings).upload_artifacts(history_run_dir=history_run_dir)
+        uploaded_artifacts = storage_sync.upload_artifacts(history_run_dir=history_run_dir)
+        storage_sync.purge_local_artifacts(uploaded_artifacts)
 
         return TrainingResult(
             model_name=selected_model_name,

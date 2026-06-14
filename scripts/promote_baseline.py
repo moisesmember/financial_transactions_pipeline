@@ -11,6 +11,7 @@ import joblib
 from src.config.settings import Settings
 from src.models.baseline import BaselineRegistry
 from src.storage.postgres_training_history import PostgresTrainingHistoryRepository
+from src.storage.sync import StorageSyncService
 
 
 def parse_args() -> argparse.Namespace:
@@ -23,7 +24,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Promote current pipeline and metadata artifacts."""
     args = parse_args()
-    settings = Settings()
+    settings = replace(Settings(), promote_baseline=True)
+    storage_sync = StorageSyncService(settings)
+    settings.artifacts_dir.mkdir(parents=True, exist_ok=True)
+    storage_sync.prepare_artifact_workspace()
     if settings.database_tracking_enabled and not args.run_id:
         raise ValueError(
             "Com DATABASE_TRACKING_ENABLED=true, informe --run-id para manter "
@@ -33,6 +37,16 @@ def main() -> None:
     run_dir = None
     if args.run_id:
         run_dir = settings.training_history_dir / args.run_id
+        if settings.storage_backend == "minio":
+            filenames = {
+                "metadata.json",
+                *settings.governance_artifact_filenames,
+            }
+            for filename in filenames:
+                storage_sync.download_artifact(
+                    settings.artifact_object_key(f"history/{args.run_id}/{filename}"),
+                    run_dir / filename,
+                )
         metadata_path = run_dir / "metadata.json"
         if not metadata_path.exists():
             raise FileNotFoundError(f"Run historico nao encontrado: {args.run_id}")
@@ -49,6 +63,12 @@ def main() -> None:
             if filename not in {settings.pipeline_filename, settings.metadata_filename}
         ]
     else:
+        if settings.storage_backend == "minio":
+            for filename in settings.governance_artifact_filenames:
+                storage_sync.download_artifact(
+                    settings.artifact_object_key(filename),
+                    settings.artifact_path(filename),
+                )
         metadata = joblib.load(settings.metadata_path)
         report_paths = [
             settings.artifact_path(filename)
@@ -84,7 +104,15 @@ def main() -> None:
             registry.rollback_promotion()
             raise RuntimeError("Promocao revertida porque o PostgreSQL nao foi atualizado.")
     registry.commit_promotion()
-    print(f"Baseline oficial salvo em: {path}")
+    uploaded = storage_sync.upload_artifacts(history_run_dir=run_dir)
+    storage_sync.purge_local_artifacts(uploaded)
+    if settings.storage_backend == "minio":
+        location = settings.object_uri(
+            settings.artifact_object_key(f"baseline/{path.name}")
+        )
+    else:
+        location = str(path)
+    print(f"Baseline oficial salvo em: {location}")
 
 
 if __name__ == "__main__":

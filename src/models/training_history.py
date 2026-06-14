@@ -159,7 +159,11 @@ class TrainingHistoryRegistry:
             "model_selection_engine": metadata.get("model_selection", {}).get("engine"),
             "model_selection_objective": metadata.get("model_selection", {}).get("objective"),
             "model_selection_trial_count": metadata.get("model_selection", {}).get("trial_count"),
-            "run_directory": run_dir.relative_to(self.settings.artifacts_dir).as_posix(),
+            "run_directory": self.settings.object_uri(
+                self.settings.artifact_object_key(
+                    run_dir.relative_to(self.settings.artifacts_dir).as_posix()
+                )
+            ),
         }
 
         index_path = self.settings.training_history_index_path

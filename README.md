@@ -82,7 +82,10 @@ O código é tolerante a pequenas variações de nomes de colunas, mas espera um
 
 ## Storage local ou MinIO
 
-Por padrão, o projeto usa arquivos locais em `data/raw` e salva artefatos em `artifacts`.
+O projeto usa o MinIO como armazenamento definitivo para dados raw, modelos,
+históricos, baselines, auditorias e resultados dos benchmarks. Os diretórios
+locais são usados somente como staging durante a execução e removidos após o
+upload ser confirmado.
 
 Para usar MinIO como object store:
 
@@ -98,6 +101,8 @@ MINIO_BUCKET=fraud-detection
 MINIO_SECURE=false
 RAW_DATA_PREFIX=data/raw
 ARTIFACTS_PREFIX=artifacts
+KEEP_LOCAL_RAW_DATA=false
+KEEP_LOCAL_ARTIFACTS=false
 ```
 
 3. Suba o MinIO local:
@@ -118,13 +123,31 @@ http://localhost:9001
 python -m scripts.import_kaggle_data
 ```
 
-5. Treine lendo os dados do MinIO e salvando os artefatos também no bucket:
+Para migrar dados e artefatos que já existam localmente, execute uma vez:
+
+```bash
+python -m scripts.migrate_local_storage_to_minio
+```
+
+A limpeza local só ocorre após todos os objetos serem confirmados no bucket.
+Se qualquer upload falhar, os arquivos locais são preservados.
+
+5. Treine lendo os dados do MinIO e salvando os artefatos no bucket:
 
 ```bash
 python main.py
 ```
 
-Quando `STORAGE_BACKEND=minio`, a API e o serviço de predição tentam baixar `artifacts/fraud_pipeline.joblib` e `artifacts/model_metadata.joblib` do bucket se eles ainda não existirem localmente.
+Os objetos ficam organizados pelos prefixos:
+
+- `data/raw/`: dataset original.
+- `artifacts/`: artefatos da execução mais recente.
+- `artifacts/history/<run_id>/`: histórico imutável de cada treino.
+- `artifacts/baseline/`: baseline oficial.
+- `artifacts/external_benchmarks/<run_id>/`: saídas de AutoGluon, H2O e FLAML.
+
+Quando `KEEP_LOCAL_ARTIFACTS=false`, a API baixa o pipeline e os metadados,
+carrega-os em memória e remove imediatamente as cópias locais.
 
 ## PostgreSQL
 
