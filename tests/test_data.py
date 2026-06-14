@@ -51,6 +51,8 @@ def test_temporal_split_preserves_order() -> None:
 
     assert splits.train["date"].max() < splits.validation["date"].min()
     assert splits.validation["date"].max() < splits.test["date"].min()
+    assert splits.out_of_time is not None
+    assert splits.test["date"].max() < splits.out_of_time["date"].min()
 
 
 def test_temporal_split_keeps_equal_timestamps_in_same_partition() -> None:
@@ -79,3 +81,17 @@ def test_training_data_limiter_preserves_source_order() -> None:
 
     assert limited["id"].tolist() == [0, 1, 2, 3]
     assert len(transactions) == 10
+
+
+def test_training_data_limiter_preserves_full_time_horizon() -> None:
+    transactions = pd.DataFrame(
+        {
+            "id": range(10),
+            "date": pd.date_range("2020-01-01", periods=10, freq="D"),
+        }
+    )
+
+    limited = TrainingDataLimiter(max_rows=4).apply(transactions)
+
+    assert limited["date"].min() == transactions["date"].min()
+    assert limited["date"].max() == transactions["date"].max()

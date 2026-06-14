@@ -189,12 +189,17 @@ python -m scripts.migrate_database downgrade
 O schema contém:
 
 - `training_runs`: configuração, período, volumes, auditoria e metadata completa.
-- `run_metrics`: métricas consolidadas de validação e teste.
-- `threshold_evaluations`: TP, FP, TN, FN e custo por threshold.
+- `run_metrics`: métricas de validação, teste e out-of-time.
+- `threshold_evaluations`: TP, FP, TN, FN e custo por threshold/cenário.
 - `run_artifacts`: localização e hash dos artefatos.
 - `baseline_promotions`: histórico de modelos promovidos.
+- `leakage_audit_checks`: checks individualizados e suas severidades.
+- `model_features`: coeficientes/importâncias e classificação das features.
+- `robustness_experiments`: resultados das ablações geográficas A-D.
+- `model_predictions`, `operational_feedback` e `drift_metrics`: base para
+  monitoramento pós-produção.
 - `fact_model_runs`: view fato com uma linha por treino, métricas de validação
-  e teste, custos, auditoria, thresholds, artefatos, baseline e rankings.
+  teste e OOT, custos, auditoria, versões, thresholds, baseline e rankings.
 
 Por padrão, a conexão utilizada pelas migrations é:
 
@@ -210,9 +215,10 @@ Após salvar o histórico local, o pipeline tenta gravar automaticamente no
 PostgreSQL:
 
 - Uma linha em `training_runs`.
-- Métricas de validação e teste em `run_metrics`.
+- Métricas de validação, teste e out-of-time em `run_metrics`.
 - Toda a grade de thresholds em `threshold_evaluations`.
 - Caminhos, tamanhos e hashes em `run_artifacts`.
+- Checks da auditoria e importâncias das features em tabelas próprias.
 
 A operação é transacional e idempotente pelo `run_id`. Se o PostgreSQL estiver
 indisponível ou as migrations ainda não tiverem sido aplicadas, o treinamento
@@ -252,12 +258,12 @@ nas colunas JSONB `threshold_evaluations`, `artifacts` e
 
 ## Princípios de modelagem
 
-- Split temporal em treino, validação e teste.
-- Nenhum `fit` em validação ou teste.
+- Split temporal em treino, validação, teste e out-of-time.
+- Nenhum `fit` em validação, teste ou out-of-time.
 - Nenhum ID cru usado como feature.
 - Features históricas calculadas com `shift`, sem usar a própria transação nem dados futuros.
 - Métrica principal orientada a fraude: PR-AUC, recall, precision, F1 e F-beta.
-- Threshold escolhido na validação e aplicado no teste.
+- Threshold escolhido na validação e aplicado sem ajuste no teste e OOT.
 - Pipeline completa salva com limpeza, engenharia de features, `ColumnTransformer` e modelo.
 
 ## Como executar
@@ -308,21 +314,29 @@ adequado para treinamento local com scikit-learn.
 
 Cada treinamento gera:
 
-- `artifacts/threshold_analysis.csv`: TP, FP, TN, FN, precision, recall,
-  F-beta e custo para thresholds entre `0.08` e `0.30`, nos splits de validação
-  e teste.
+- `artifacts/threshold_analysis.csv`: grade principal entre `0.05` e `0.80`
+  para validação, teste e OOT.
+- `artifacts/threshold_cost_scenarios.csv`: melhores pontos para os cenários
+  `1:10`, `1:25`, `1:50` e `5:25`.
 - `artifacts/leakage_audit.json`: checks temporais, features de risco e alerta
   para ROC-AUC anormalmente alta.
+- `artifacts/feature_importance.csv`: coeficientes, odds ratio, direção e grupo.
+- `artifacts/calibration_report.csv`, `score_deciles.csv`,
+  `calibration_metrics.json` e `calibration_curve.png`: calibração dos scores.
+- `artifacts/out_of_time_metrics.json`: avaliação da janela futura intocada.
+- `artifacts/model_card.md`: documentação automática da execução.
+- `artifacts/baseline_decision.json`: decisão `promote`, `keep_candidate` ou
+  `reject`, com os motivos.
+- `artifacts/manifest.json`: hashes e tamanhos dos artefatos obrigatórios.
 - `artifacts/model_metadata.joblib`: métricas e configuração operacional.
 - `artifacts/history/<run_id>/`: cópia imutável dos metadados, auditoria,
   thresholds e pipeline daquela execução.
 - `artifacts/history/runs.csv`: índice consolidado para comparar todos os
   treinamentos.
 
-O threshold é escolhido somente na validação. O split de teste é usado para
-confirmar o resultado e não deve ser usado para escolher o threshold.
-Quando o menor custo estiver em `0.08` ou `0.30`, a auditoria recomenda ampliar
-a faixa antes de aprovar o ponto operacional.
+O threshold é escolhido somente na validação. Teste e OOT confirmam desempenho,
+estabilidade temporal, custo e capacidade operacional. Um threshold no limite
+da grade bloqueia a promoção automática.
 
 Configure os custos relativos no `.env`:
 
@@ -330,9 +344,11 @@ Configure os custos relativos no `.env`:
 THRESHOLD_SELECTION_STRATEGY=business_cost
 FALSE_POSITIVE_COST=1
 FALSE_NEGATIVE_COST=25
-THRESHOLD_ANALYSIS_START=0.08
-THRESHOLD_ANALYSIS_STOP=0.30
+THRESHOLD_ANALYSIS_START=0.05
+THRESHOLD_ANALYSIS_STOP=0.80
 THRESHOLD_ANALYSIS_STEP=0.01
+THRESHOLD_COST_SCENARIOS=1:10,1:25,1:50,5:25
+OUT_OF_TIME_SIZE=0.10
 ```
 
 Os valores representam custos relativos e devem refletir o negócio. Por
@@ -368,8 +384,24 @@ Por padrão, cada run mantém uma cópia do pipeline para reprodução e promoç
 Use `TRAINING_HISTORY_SAVE_PIPELINE=false` apenas para economizar storage,
 aceitando que o modelo histórico não poderá ser restaurado diretamente.
 
-Também é possível promover ao final do treino com `PROMOTE_BASELINE=true`.
-Use `BASELINE_OVERWRITE=true` somente quando a substituição tiver sido aprovada.
+Também é possível solicitar promoção ao final do treino com
+`PROMOTE_BASELINE=true`. A promoção só ocorre quando a política retorna
+`promote`; `keep_candidate` e `reject` são bloqueados. Se o PostgreSQL falhar, a
+alteração local é revertida para evitar registries divergentes.
+
+Gates configuráveis:
+
+```bash
+PROMOTION_MIN_RECALL=0.90
+PROMOTION_MAX_ALERT_RATE=0.025
+PROMOTION_MAX_OOT_PR_AUC_DROP=0.15
+PROMOTION_MAX_COST_INCREASE=0.05
+BASELINE_WARNING_JUSTIFICATION=
+```
+
+Para executar as ablações geográficas A-D, habilite
+`RUN_GEO_ABLATION=true`. Esse modo treina três modelos adicionais e aumenta
+consideravelmente tempo e memória.
 
 Uma auditoria com status `warning` não comprova vazamento, mas exige revisão.
 Neste dataset, atributos de snapshot como `card_on_dark_web`, `credit_score` e
@@ -418,6 +450,19 @@ Depois de treinar:
 ```bash
 uvicorn src.api.app:app --reload
 ```
+
+A documentação Swagger fica disponível em `http://localhost:8000/docs`.
+
+Para exportar em JSON todas as colunas da view
+`fraud_tracking.fact_model_runs`:
+
+```bash
+curl "http://localhost:8000/model-runs/export?limit=100&offset=0"
+```
+
+A resposta contém `total`, `count`, os dados de paginação e `items`. Cada item
+representa um treino e preserva os blocos JSON de thresholds, artefatos,
+auditoria e promoções de baseline. O limite máximo por requisição é 1000.
 
 Exemplo de request:
 

@@ -44,12 +44,17 @@ class LeakageAuditService:
         validation_metrics: dict[str, float],
         test_metrics: dict[str, float],
         selected_threshold: float,
+        out_of_time_metrics: dict[str, float] | None = None,
     ) -> dict[str, Any]:
         """Return a serializable audit report with status and recommendations."""
         time_col = splits.time_column
         temporal_order_valid = bool(
             splits.train[time_col].max() < splits.validation[time_col].min()
             and splits.validation[time_col].max() < splits.test[time_col].min()
+            and (
+                splits.out_of_time is None
+                or splits.test[time_col].max() < splits.out_of_time[time_col].min()
+            )
         )
         duplicate_ids = self._duplicate_ids(splits)
         selected_columns = self._selected_input_columns(pipeline)
@@ -60,12 +65,19 @@ class LeakageAuditService:
         high_auc = max(
             validation_metrics.get("roc_auc", 0.0),
             test_metrics.get("roc_auc", 0.0),
+            (out_of_time_metrics or {}).get("roc_auc", 0.0),
         ) >= self.settings.leakage_roc_auc_warning
         threshold_at_boundary = bool(
             np.isclose(selected_threshold, self.settings.threshold_analysis_start)
             or np.isclose(selected_threshold, self.settings.threshold_analysis_stop)
         )
         limited_training_window = self.settings.training_max_rows is not None
+        top_model_features = self._top_model_features(pipeline)
+        top_five_names = [str(item["feature"]).lower() for item in top_model_features[:5]]
+        geographic_dominance = sum(
+            any(token in name for token in ("merchant_city", "merchant_state", "zip", "latitude", "longitude"))
+            for name in top_five_names
+        ) >= 2
 
         failures: list[str] = []
         warnings: list[str] = []
@@ -109,13 +121,27 @@ class LeakageAuditService:
             )
         if limited_training_window:
             warnings.append(
-                "O treino usa um recorte inicial limitado de transacoes e nao cobre todo o horizonte."
+                "O treino usa uma amostra limitada de transacoes ao longo do horizonte."
             )
             recommendations.append(
-                "Executar uma validacao out-of-time em uma janela posterior do dataset completo."
+                "Confirmar os resultados com maior volume ou com o dataset completo."
+            )
+        if geographic_dominance:
+            warnings.append("Features geograficas dominam pelo menos duas das cinco maiores importancias.")
+            recommendations.append(
+                "Executar os experimentos de ablation geografica antes de promover o modelo."
             )
 
         status = "fail" if failures else "warning" if warnings else "pass"
+        check_results = [
+            self._check("temporal_order", temporal_order_valid, "critical"),
+            self._check("duplicate_transaction_ids", duplicate_ids == 0, "critical"),
+            self._check("target_not_selected", not direct_target_selected, "critical"),
+            self._check("roc_auc_below_warning", not high_auc, "warning"),
+            self._check("threshold_inside_analysis_range", not threshold_at_boundary, "warning"),
+            self._check("full_training_horizon", not limited_training_window, "warning"),
+            self._check("geographic_features_not_dominant", not geographic_dominance, "warning"),
+        ]
         report = {
             "status": status,
             "checks": {
@@ -125,15 +151,22 @@ class LeakageAuditService:
                 "high_roc_auc_warning": high_auc,
                 "threshold_at_analysis_boundary": threshold_at_boundary,
                 "limited_training_window": limited_training_window,
+                "geographic_feature_dominance": geographic_dominance,
             },
             "split_boundaries": {
                 "train_max": splits.train[time_col].max().isoformat(),
                 "validation_min": splits.validation[time_col].min().isoformat(),
                 "validation_max": splits.validation[time_col].max().isoformat(),
                 "test_min": splits.test[time_col].min().isoformat(),
+                "test_max": splits.test[time_col].max().isoformat(),
+                "out_of_time_min": (
+                    splits.out_of_time[time_col].min().isoformat()
+                    if splits.out_of_time is not None
+                    else None
+                ),
             },
             "selected_input_columns": sorted(selected_columns),
-            "top_model_features": self._top_model_features(pipeline),
+            "top_model_features": top_model_features,
             "risk_columns": {
                 "snapshot": snapshot_risks,
                 "post_event": post_event_risks,
@@ -142,6 +175,7 @@ class LeakageAuditService:
             "failures": failures,
             "warnings": warnings,
             "recommendations": recommendations,
+            "check_results": check_results,
         }
         log_method = logger.error if failures else logger.warning if warnings else logger.info
         log_method(
@@ -166,7 +200,22 @@ class LeakageAuditService:
         train_ids = set(splits.train[id_column].astype(str))
         validation_ids = set(splits.validation[id_column].astype(str))
         test_ids = set(splits.test[id_column].astype(str))
-        return len(train_ids & validation_ids) + len(train_ids & test_ids) + len(validation_ids & test_ids)
+        partitions = [train_ids, validation_ids, test_ids]
+        if splits.out_of_time is not None:
+            partitions.append(set(splits.out_of_time[id_column].astype(str)))
+        return sum(
+            len(partitions[left] & partitions[right])
+            for left in range(len(partitions))
+            for right in range(left + 1, len(partitions))
+        )
+
+    @staticmethod
+    def _check(name: str, passed: bool, severity: str) -> dict[str, Any]:
+        return {
+            "check_name": name,
+            "check_result": "pass" if passed else "fail",
+            "severity": severity,
+        }
 
     @staticmethod
     def _selected_input_columns(pipeline: Any) -> set[str]:

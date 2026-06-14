@@ -4,15 +4,18 @@
     "temporal_order_valid": true,
     "duplicate_transaction_ids_across_splits": 0,
     "target_selected_as_feature": false,
-    "high_roc_auc_warning": true,
+    "high_roc_auc_warning": false,
     "threshold_at_analysis_boundary": true,
-    "limited_training_window": true
+    "limited_training_window": true,
+    "geographic_feature_dominance": true
   },
   "split_boundaries": {
-    "train_max": "2010-07-08T06:40:00",
-    "validation_min": "2010-07-08T06:41:00",
-    "validation_max": "2010-08-16T11:58:00",
-    "test_min": "2010-08-16T12:00:00"
+    "train_max": "2016-01-08T15:09:00",
+    "validation_min": "2016-01-08T15:19:00",
+    "validation_max": "2017-06-15T13:06:00",
+    "test_min": "2017-06-15T13:09:00",
+    "test_max": "2018-11-17T09:59:00",
+    "out_of_time_min": "2018-11-17T10:02:00"
   },
   "selected_input_columns": [
     "amount",
@@ -45,104 +48,104 @@
   ],
   "top_model_features": [
     {
+      "feature": "merchant_city_Strasburg",
+      "importance": 17.611725908441777,
+      "absolute_importance": 17.611725908441777
+    },
+    {
+      "feature": "merchant_city_Flagstaff",
+      "importance": 15.531941919801275,
+      "absolute_importance": 15.531941919801275
+    },
+    {
+      "feature": "merchant_city_Fall River Mills",
+      "importance": 15.338441063222986,
+      "absolute_importance": 15.338441063222986
+    },
+    {
+      "feature": "merchant_city_Cary",
+      "importance": 11.45107205411177,
+      "absolute_importance": 11.45107205411177
+    },
+    {
+      "feature": "merchant_city_Citrus Heights",
+      "importance": 9.979703151562282,
+      "absolute_importance": 9.979703151562282
+    },
+    {
       "feature": "merchant_city_Port au Prince",
-      "importance": 15.975052287790731,
-      "absolute_importance": 15.975052287790731
+      "importance": 9.64626173462489,
+      "absolute_importance": 9.64626173462489
     },
     {
       "feature": "merchant_state_Haiti",
-      "importance": 15.975052287790731,
-      "absolute_importance": 15.975052287790731
+      "importance": 9.64626173462489,
+      "absolute_importance": 9.64626173462489
     },
     {
-      "feature": "merchant_state_infrequent_sklearn",
-      "importance": 14.002482338021636,
-      "absolute_importance": 14.002482338021636
+      "feature": "merchant_city_Jackson",
+      "importance": 9.400430721391153,
+      "absolute_importance": 9.400430721391153
+    },
+    {
+      "feature": "merchant_city_Mingo Junction",
+      "importance": 9.39619852481567,
+      "absolute_importance": 9.39619852481567
+    },
+    {
+      "feature": "merchant_city_Doylestown",
+      "importance": 9.262398842205444,
+      "absolute_importance": 9.262398842205444
+    },
+    {
+      "feature": "merchant_city_Rio Rancho",
+      "importance": 9.244439978091906,
+      "absolute_importance": 9.244439978091906
+    },
+    {
+      "feature": "merchant_city_Sugarcreek",
+      "importance": 8.722965245802575,
+      "absolute_importance": 8.722965245802575
+    },
+    {
+      "feature": "merchant_city_Ogden",
+      "importance": 8.541382556552355,
+      "absolute_importance": 8.541382556552355
+    },
+    {
+      "feature": "merchant_city_Knoxville",
+      "importance": 8.352491733963383,
+      "absolute_importance": 8.352491733963383
+    },
+    {
+      "feature": "merchant_city_Black Diamond",
+      "importance": 8.316439805129487,
+      "absolute_importance": 8.316439805129487
+    },
+    {
+      "feature": "merchant_city_Harrison",
+      "importance": 8.162098403963109,
+      "absolute_importance": 8.162098403963109
     },
     {
       "feature": "mcc_4784",
-      "importance": -10.080209586224031,
-      "absolute_importance": 10.080209586224031
+      "importance": -7.976578263414038,
+      "absolute_importance": 7.976578263414038
     },
     {
       "feature": "mcc_description_Tolls and Bridge Fees",
-      "importance": -10.080209586224031,
-      "absolute_importance": 10.080209586224031
+      "importance": -7.976578263414038,
+      "absolute_importance": 7.976578263414038
     },
     {
-      "feature": "use_chip_Swipe Transaction",
-      "importance": -8.106290906502977,
-      "absolute_importance": 8.106290906502977
+      "feature": "merchant_city_Pompano Beach",
+      "importance": 7.857858660738293,
+      "absolute_importance": 7.857858660738293
     },
     {
-      "feature": "merchant_city_infrequent_sklearn",
-      "importance": 6.633222093395959,
-      "absolute_importance": 6.633222093395959
-    },
-    {
-      "feature": "mcc_4814",
-      "importance": -6.208539184850262,
-      "absolute_importance": 6.208539184850262
-    },
-    {
-      "feature": "mcc_description_Telecommunication Services",
-      "importance": -6.208539184850262,
-      "absolute_importance": 6.208539184850262
-    },
-    {
-      "feature": "mcc_description_Utilities - Electric, Gas, Water, Sanitary",
-      "importance": -5.621593039799883,
-      "absolute_importance": 5.621593039799883
-    },
-    {
-      "feature": "mcc_4900",
-      "importance": -5.621593039799883,
-      "absolute_importance": 5.621593039799883
-    },
-    {
-      "feature": "use_chip_Online Transaction",
-      "importance": 5.401235771365053,
-      "absolute_importance": 5.401235771365053
-    },
-    {
-      "feature": "merchant_city_ONLINE",
-      "importance": 5.401235771365053,
-      "absolute_importance": 5.401235771365053
-    },
-    {
-      "feature": "mcc_description_Cable, Satellite, and Other Pay Television Services",
-      "importance": -5.1722447892304775,
-      "absolute_importance": 5.1722447892304775
-    },
-    {
-      "feature": "mcc_4899",
-      "importance": -5.1722447892304775,
-      "absolute_importance": 5.1722447892304775
-    },
-    {
-      "feature": "mcc_6300",
-      "importance": -4.311848232800048,
-      "absolute_importance": 4.311848232800048
-    },
-    {
-      "feature": "mcc_description_Insurance Sales, Underwriting",
-      "importance": -4.311848232800048,
-      "absolute_importance": 4.311848232800048
-    },
-    {
-      "feature": "mcc_description_Cleaning and Maintenance Services",
-      "importance": -4.19297805030619,
-      "absolute_importance": 4.19297805030619
-    },
-    {
-      "feature": "mcc_7349",
-      "importance": -4.19297805030619,
-      "absolute_importance": 4.19297805030619
-    },
-    {
-      "feature": "mcc_description_Athletic Fields, Commercial Sports",
-      "importance": -4.146544510517715,
-      "absolute_importance": 4.146544510517715
+      "feature": "merchant_city_Kirkland",
+      "importance": 7.479094678693152,
+      "absolute_importance": 7.479094678693152
     }
   ],
   "risk_columns": {
@@ -152,13 +155,50 @@
   },
   "failures": [],
   "warnings": [
-    "ROC-AUC maior ou igual a 0.990.",
     "O threshold selecionado esta no limite da faixa analisada.",
-    "O treino usa um recorte inicial limitado de transacoes e nao cobre todo o horizonte."
+    "O treino usa uma amostra limitada de transacoes ao longo do horizonte.",
+    "Features geograficas dominam pelo menos duas das cinco maiores importancias."
   ],
   "recommendations": [
-    "Validar em uma janela temporal futura e revisar as features mais importantes.",
     "Ampliar THRESHOLD_ANALYSIS_START/STOP antes de aprovar o custo operacional.",
-    "Executar uma validacao out-of-time em uma janela posterior do dataset completo."
+    "Confirmar os resultados com maior volume ou com o dataset completo.",
+    "Executar os experimentos de ablation geografica antes de promover o modelo."
+  ],
+  "check_results": [
+    {
+      "check_name": "temporal_order",
+      "check_result": "pass",
+      "severity": "critical"
+    },
+    {
+      "check_name": "duplicate_transaction_ids",
+      "check_result": "pass",
+      "severity": "critical"
+    },
+    {
+      "check_name": "target_not_selected",
+      "check_result": "pass",
+      "severity": "critical"
+    },
+    {
+      "check_name": "roc_auc_below_warning",
+      "check_result": "pass",
+      "severity": "warning"
+    },
+    {
+      "check_name": "threshold_inside_analysis_range",
+      "check_result": "fail",
+      "severity": "warning"
+    },
+    {
+      "check_name": "full_training_horizon",
+      "check_result": "fail",
+      "severity": "warning"
+    },
+    {
+      "check_name": "geographic_features_not_dominant",
+      "check_result": "fail",
+      "severity": "warning"
+    }
   ]
 }

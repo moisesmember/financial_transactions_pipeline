@@ -1,0 +1,11 @@
+{
+  "validation": {
+    "brier_score": 0.02825456256825458
+  },
+  "test": {
+    "brier_score": 0.02889896651468206
+  },
+  "out_of_time": {
+    "brier_score": 0.031067319656254005
+  }
+}

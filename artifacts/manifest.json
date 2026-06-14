@@ -1,0 +1,70 @@
+{
+  "artifact_count": 13,
+  "artifacts": [
+    {
+      "filename": "baseline_decision.json",
+      "sha256": "98deffa2b4a8699e1f22357f4400b8be51294d97e1166a7fcb74e23f9e873a00",
+      "size_bytes": 540
+    },
+    {
+      "filename": "calibration_curve.png",
+      "sha256": "9efcfa89f55441b5ee1dc6326ffae322a41fb9696b5edf9a43b6d2347f290c18",
+      "size_bytes": 45967
+    },
+    {
+      "filename": "calibration_metrics.json",
+      "sha256": "1e0fb6754538b6c90fc27930734eec6b6450414104962416581d78bffb9d646f",
+      "size_bytes": 194
+    },
+    {
+      "filename": "calibration_report.csv",
+      "sha256": "259401a26a2f537de503eab76fbf8bf362909543b2ee6c604e76b74780addc99",
+      "size_bytes": 1691
+    },
+    {
+      "filename": "feature_importance.csv",
+      "sha256": "e5b9ab0ddb2299e1c0dc8df7a3295c7a0583051d469559aa6fc2c7516da53651",
+      "size_bytes": 371554
+    },
+    {
+      "filename": "fraud_pipeline.joblib",
+      "sha256": "e048a43e64dd886c6e82da28415b307b62d70d51ede2d4d6ba46f6910f9b6a9d",
+      "size_bytes": 8905487
+    },
+    {
+      "filename": "leakage_audit.json",
+      "sha256": "7d4b70444bf10d0e713aa9cd8a53ff0537c9ca3091f898660bd66518edf361f9",
+      "size_bytes": 5768
+    },
+    {
+      "filename": "model_card.md",
+      "sha256": "841cf12281fcd240e7eee593aa7dddb36f9467168097a39fd6daf761f7e4eadd",
+      "size_bytes": 1769
+    },
+    {
+      "filename": "model_metadata.joblib",
+      "sha256": "e424fca2c3f41238ea490b4c08befcfde85dc5caf3150ca287d6e092c9a08249",
+      "size_bytes": 2471
+    },
+    {
+      "filename": "out_of_time_metrics.json",
+      "sha256": "2311f73a28c622d6730fca2849a3912df9fe7b0602748e18d83fac0b3e54de40",
+      "size_bytes": 355
+    },
+    {
+      "filename": "score_deciles.csv",
+      "sha256": "2e9bf9c236e1c535b6b72047cd7f209a0633e8710c8a93c9de7ed74b9770a3d6",
+      "size_bytes": 3273
+    },
+    {
+      "filename": "threshold_analysis.csv",
+      "sha256": "ed5cbf85466e84f0bff1da31079aae385467e0f9194859ca1df8944be4b3bf13",
+      "size_bytes": 42349
+    },
+    {
+      "filename": "threshold_cost_scenarios.csv",
+      "sha256": "f9ae68694fe006ee8508d2327a99ce604a121923a72cb576c2c11d811a592c7b",
+      "size_bytes": 2407
+    }
+  ]
+}

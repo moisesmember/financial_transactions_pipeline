@@ -28,6 +28,7 @@ def build_threshold_table(
     false_positive_cost: float,
     false_negative_cost: float,
     split: str,
+    scenario_name: str = "primary",
 ) -> pd.DataFrame:
     """Compare classification outcomes and business cost across thresholds."""
     rows: list[dict[str, float | str]] = []
@@ -44,6 +45,7 @@ def build_threshold_table(
         )
         rows.append(
             {
+                "scenario_name": scenario_name,
                 "split": split,
                 "threshold": float(threshold),
                 "precision": float(precision_score(y_true, y_pred, zero_division=0)),
@@ -58,6 +60,8 @@ def build_threshold_table(
                 "alert_rate": float((tp + fp) / sample_count),
                 "business_cost": float(business_cost),
                 "cost_per_record": float(business_cost / sample_count),
+                "false_positive_cost": float(false_positive_cost),
+                "false_negative_cost": float(false_negative_cost),
             }
         )
     return pd.DataFrame(rows)
@@ -89,3 +93,33 @@ def select_business_threshold(table: pd.DataFrame) -> tuple[float, dict[str, flo
         )
     }
     return float(selected["threshold"]), metrics
+
+
+def build_cost_scenario_summary(
+    split_scores: dict[str, tuple[np.ndarray, np.ndarray]],
+    thresholds: np.ndarray,
+    beta: float,
+    cost_scenarios: tuple[tuple[float, float], ...],
+) -> pd.DataFrame:
+    """Select a validation threshold for each cost scenario and evaluate every split."""
+    rows: list[dict[str, float | str]] = []
+    for false_positive_cost, false_negative_cost in cost_scenarios:
+        scenario_name = f"fp_{false_positive_cost:g}_fn_{false_negative_cost:g}"
+        tables = {
+            split: build_threshold_table(
+                y_true,
+                y_score,
+                thresholds=thresholds,
+                beta=beta,
+                false_positive_cost=false_positive_cost,
+                false_negative_cost=false_negative_cost,
+                split=split,
+                scenario_name=scenario_name,
+            )
+            for split, (y_true, y_score) in split_scores.items()
+        }
+        selected_threshold, _ = select_business_threshold(tables["validation"])
+        for split, table in tables.items():
+            selected = table.loc[np.isclose(table["threshold"], selected_threshold)].iloc[0]
+            rows.append(selected.to_dict())
+    return pd.DataFrame(rows)

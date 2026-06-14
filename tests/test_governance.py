@@ -11,6 +11,7 @@ import pytest
 from src.config.settings import Settings
 from src.data.split_data import DataSplits
 from src.models.baseline import BaselineRegistry
+from src.models.baseline_decision import BaselineDecisionService
 from src.models.leakage_audit import LeakageAuditService
 from src.models.training_history import TrainingHistoryRegistry
 from src.storage.postgres_training_history import PostgresTrainingHistoryRepository
@@ -29,6 +30,21 @@ def test_baseline_registry_requires_explicit_overwrite(tmp_path) -> None:
     assert (settings.baseline_dir / settings.baseline_pipeline_filename).read_bytes() == b"model"
     with pytest.raises(FileExistsError):
         registry.promote({"model_name": "new"})
+
+
+def test_baseline_registry_can_rollback_overwrite(tmp_path) -> None:
+    settings = Settings(project_root=tmp_path)
+    settings.artifacts_dir.mkdir(parents=True)
+    settings.pipeline_path.write_bytes(b"old")
+    registry = BaselineRegistry(settings)
+    registry.promote({"model_name": "old"}, audit_status="pass")
+    registry.commit_promotion()
+
+    settings.pipeline_path.write_bytes(b"new")
+    registry.promote({"model_name": "new"}, audit_status="pass", overwrite=True)
+    registry.rollback_promotion()
+
+    assert (settings.baseline_dir / settings.baseline_pipeline_filename).read_bytes() == b"old"
 
 
 def test_leakage_audit_flags_snapshot_and_high_auc(tmp_path) -> None:
@@ -170,3 +186,54 @@ def test_database_url_is_built_from_postgres_settings(tmp_path) -> None:
     assert settings.database_url == (
         "postgresql+psycopg://user%40example:secret+value@db:5433/tracking"
     )
+
+
+def test_baseline_decision_keeps_candidate_when_threshold_is_at_boundary(tmp_path) -> None:
+    settings = Settings(project_root=tmp_path)
+    required = tmp_path / "artifact"
+    required.write_text("ok", encoding="utf-8")
+    metrics = {
+        "pr_auc": 0.8,
+        "recall": 0.95,
+        "alert_rate": 0.02,
+        "tp": 95,
+        "fp": 190,
+        "tn": 9700,
+        "fn": 5,
+    }
+
+    decision = BaselineDecisionService(settings).decide(
+        {"test_metrics": metrics, "out_of_time_metrics": metrics},
+        {
+            "status": "warning",
+            "warnings": ["threshold"],
+            "checks": {"threshold_at_analysis_boundary": True},
+        },
+        [required],
+    )
+
+    assert decision["decision"] == "keep_candidate"
+
+
+def test_baseline_decision_promotes_when_all_gates_pass(tmp_path) -> None:
+    settings = Settings(project_root=tmp_path)
+    required = tmp_path / "artifact"
+    required.write_text("ok", encoding="utf-8")
+    test_metrics = {
+        "pr_auc": 0.8,
+        "recall": 0.95,
+        "alert_rate": 0.02,
+        "tp": 95,
+        "fp": 190,
+        "tn": 9700,
+        "fn": 5,
+    }
+    oot_metrics = {**test_metrics, "pr_auc": 0.75}
+
+    decision = BaselineDecisionService(settings).decide(
+        {"test_metrics": test_metrics, "out_of_time_metrics": oot_metrics},
+        {"status": "pass", "warnings": [], "checks": {}},
+        [required],
+    )
+
+    assert decision["decision"] == "promote"

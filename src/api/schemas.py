@@ -32,3 +32,14 @@ class HealthResponse(BaseModel):
 
     status: str
     model_loaded: bool
+
+
+class ModelRunExportResponse(BaseModel):
+    """Paginated export from the model run fact view."""
+
+    source: str
+    total: int
+    count: int
+    limit: int
+    offset: int
+    items: list[dict[str, Any]]

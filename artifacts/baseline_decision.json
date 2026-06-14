@@ -1,0 +1,17 @@
+{
+  "decision": "reject",
+  "reasons": [
+    "Recall out-of-time abaixo do minimo operacional.",
+    "PR-AUC de teste inferior ao baseline atual.",
+    "Custo por registro superior ao limite do baseline.",
+    "Threshold selecionado no limite da faixa analisada.",
+    "Warnings da auditoria ainda nao possuem justificativa."
+  ],
+  "warning_justification": null,
+  "policy": {
+    "min_oot_recall": 0.9,
+    "max_oot_alert_rate": 0.025,
+    "max_relative_oot_pr_auc_drop": 0.15,
+    "max_baseline_cost_increase": 0.05
+  }
+}

@@ -14,6 +14,7 @@ from uuid import uuid4
 import pandas as pd
 
 from src.config.settings import Settings
+from src.models.governance_artifacts import write_manifest
 from src.utils.logger import get_logger
 
 
@@ -48,12 +49,14 @@ class TrainingHistoryRegistry:
         run_dir.mkdir(parents=True)
 
         files = {
-            self.settings.metadata_path: run_dir / self.settings.metadata_filename,
-            self.settings.threshold_analysis_path: run_dir / self.settings.threshold_analysis_filename,
-            self.settings.leakage_report_path: run_dir / self.settings.leakage_report_filename,
+            self.settings.artifact_path(filename): run_dir / filename
+            for filename in self.settings.governance_artifact_filenames
+            if self.settings.artifact_path(filename).exists()
+            and (
+                filename != self.settings.pipeline_filename
+                or self.settings.training_history_save_pipeline
+            )
         }
-        if self.settings.training_history_save_pipeline:
-            files[self.settings.pipeline_path] = run_dir / self.settings.pipeline_filename
         for source, target in files.items():
             copy2(source, target)
 
@@ -67,12 +70,17 @@ class TrainingHistoryRegistry:
                 "duration_seconds": (completed_at - started_at).total_seconds(),
                 "pipeline_sha256": pipeline_hash,
                 "pipeline_archived": self.settings.training_history_save_pipeline,
+                "status": metadata.get("status", "completed"),
             },
         }
         metadata_json_path = run_dir / "metadata.json"
         metadata_json_path.write_text(
             json.dumps(self._json_safe(historical_metadata), indent=2, ensure_ascii=True, allow_nan=False),
             encoding="utf-8",
+        )
+        write_manifest(
+            run_dir / self.settings.manifest_filename,
+            list(run_dir.iterdir()),
         )
         self._append_index(run_dir, historical_metadata, leakage_report)
         logger.info(
@@ -91,6 +99,7 @@ class TrainingHistoryRegistry:
         run = metadata["run"]
         validation = metadata["validation_metrics"]
         test = metadata["test_metrics"]
+        out_of_time = metadata.get("out_of_time_metrics", {})
         selection = metadata["threshold_selection"]
         row = {
             "run_id": run["run_id"],
@@ -121,17 +130,32 @@ class TrainingHistoryRegistry:
             "test_fp": test["fp"],
             "test_fn": test["fn"],
             "test_business_cost": metadata["operational_costs"]["test"],
+            "out_of_time_precision": out_of_time.get("precision"),
+            "out_of_time_recall": out_of_time.get("recall"),
+            "out_of_time_fbeta": out_of_time.get("fbeta"),
+            "out_of_time_pr_auc": out_of_time.get("pr_auc"),
+            "out_of_time_roc_auc": out_of_time.get("roc_auc"),
+            "out_of_time_alert_rate": out_of_time.get("alert_rate"),
+            "out_of_time_business_cost": metadata["operational_costs"].get("out_of_time"),
             "audit_status": leakage_report["status"],
             "audit_warning_count": len(leakage_report.get("warnings", [])),
+            "audit_failure_count": len(leakage_report.get("failures", [])),
             "training_max_rows": metadata["training_max_rows"],
             "train_rows": metadata["dataset"]["train_rows"],
             "validation_rows": metadata["dataset"]["validation_rows"],
             "test_rows": metadata["dataset"]["test_rows"],
+            "out_of_time_rows": metadata["dataset"].get("out_of_time_rows"),
             "train_positive_rate": metadata["dataset"]["train_positive_rate"],
             "validation_positive_rate": metadata["dataset"]["validation_positive_rate"],
             "test_positive_rate": metadata["dataset"]["test_positive_rate"],
+            "out_of_time_positive_rate": metadata["dataset"].get("out_of_time_positive_rate"),
             "strict_leakage_prevention": metadata["strict_leakage_prevention"],
             "pipeline_sha256": run["pipeline_sha256"],
+            "dataset_version": metadata.get("dataset_version"),
+            "feature_set_version": metadata.get("feature_set_version"),
+            "code_version": metadata.get("code_version"),
+            "experiment_fingerprint": metadata.get("experiment_fingerprint"),
+            "promotion_decision": metadata.get("baseline_decision", {}).get("decision"),
             "run_directory": run_dir.relative_to(self.settings.artifacts_dir).as_posix(),
         }
 

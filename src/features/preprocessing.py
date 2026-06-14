@@ -48,6 +48,8 @@ def columns_to_drop(columns: Iterable[str], settings: Settings) -> list[str]:
         lower = column.lower()
         if lower == settings.target_column:
             drop.append(column)
+        elif lower in {item.lower() for item in settings.feature_exclusions}:
+            drop.append(column)
         elif lower in RAW_ID_HINTS or lower.endswith("_id") or "_id_" in lower:
             drop.append(column)
         elif lower in SENSITIVE_FEATURES:
@@ -75,7 +77,13 @@ def build_preprocessor(sample: pd.DataFrame, settings: Settings) -> ColumnTransf
     categorical_pipeline = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("encoder", OneHotEncoder(handle_unknown="ignore", min_frequency=10)),
+            (
+                "encoder",
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    min_frequency=settings.categorical_min_frequency,
+                ),
+            ),
         ]
     )
 

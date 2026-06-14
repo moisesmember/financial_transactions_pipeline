@@ -9,7 +9,12 @@ from src.config.settings import Settings
 from src.models.evaluate import evaluate_binary_classifier
 from src.models.model_factory import ModelFactory
 from src.models.threshold import find_best_threshold
-from src.models.threshold_analysis import build_threshold_table, select_business_threshold, threshold_grid
+from src.models.threshold_analysis import (
+    build_cost_scenario_summary,
+    build_threshold_table,
+    select_business_threshold,
+    threshold_grid,
+)
 from src.models.train import FraudModelTrainer
 
 
@@ -66,6 +71,26 @@ def test_threshold_grid_includes_requested_endpoints() -> None:
 
     assert grid[0] == 0.08
     assert grid[-1] == 0.30
+
+
+def test_cost_scenarios_select_threshold_on_validation_for_every_split() -> None:
+    y_true = np.array([0, 0, 1, 1])
+    scores = np.array([0.05, 0.20, 0.60, 0.90])
+
+    summary = build_cost_scenario_summary(
+        {
+            "validation": (y_true, scores),
+            "test": (y_true, scores),
+            "out_of_time": (y_true, scores),
+        },
+        thresholds=np.array([0.10, 0.50]),
+        beta=2.0,
+        cost_scenarios=((1.0, 10.0), (5.0, 25.0)),
+    )
+
+    assert len(summary) == 6
+    assert set(summary["split"]) == {"validation", "test", "out_of_time"}
+    assert set(summary["scenario_name"]) == {"fp_1_fn_10", "fp_5_fn_25"}
 
 
 def test_training_pipeline_can_fit_small_dataframe() -> None:

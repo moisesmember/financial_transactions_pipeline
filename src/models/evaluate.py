@@ -38,6 +38,8 @@ def evaluate_binary_classifier(
         "fp": float(fp),
         "tn": float(tn),
         "fn": float(fn),
+        "alerts": float(tp + fp),
+        "alert_rate": float((tp + fp) / len(y_true)),
     }
     if len(np.unique(y_true)) == 2:
         metrics["roc_auc"] = float(roc_auc_score(y_true, y_score))

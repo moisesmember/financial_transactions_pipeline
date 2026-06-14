@@ -45,6 +45,21 @@ def _env_float(name: str, default: float) -> float:
     return default if value is None else float(value.strip())
 
 
+def _env_cost_scenarios(
+    name: str,
+    default: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    """Parse comma-separated FP:FN business-cost scenarios."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    scenarios: list[tuple[float, float]] = []
+    for item in value.split(","):
+        false_positive_cost, false_negative_cost = item.strip().split(":", maxsplit=1)
+        scenarios.append((float(false_positive_cost), float(false_negative_cost)))
+    return tuple(scenarios)
+
+
 @dataclass(frozen=True)
 class Settings:
     """Centralized configuration for paths, data columns and modeling."""
@@ -56,22 +71,31 @@ class Settings:
     random_state: int = 42
     validation_size: float = 0.15
     test_size: float = 0.15
+    out_of_time_size: float = field(
+        default_factory=lambda: _env_float("OUT_OF_TIME_SIZE", 0.10)
+    )
     threshold_beta: float = 2.0
     min_precision_for_threshold: float = 0.05
     threshold_selection_strategy: str = field(
         default_factory=lambda: os.getenv("THRESHOLD_SELECTION_STRATEGY", "business_cost")
     )
     threshold_analysis_start: float = field(
-        default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_START", 0.08)
+        default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_START", 0.05)
     )
     threshold_analysis_stop: float = field(
-        default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_STOP", 0.30)
+        default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_STOP", 0.80)
     )
     threshold_analysis_step: float = field(
         default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_STEP", 0.01)
     )
     false_positive_cost: float = field(default_factory=lambda: _env_float("FALSE_POSITIVE_COST", 1.0))
     false_negative_cost: float = field(default_factory=lambda: _env_float("FALSE_NEGATIVE_COST", 25.0))
+    threshold_cost_scenarios: tuple[tuple[float, float], ...] = field(
+        default_factory=lambda: _env_cost_scenarios(
+            "THRESHOLD_COST_SCENARIOS",
+            ((1.0, 10.0), (1.0, 25.0), (1.0, 50.0), (5.0, 25.0)),
+        )
+    )
     leakage_roc_auc_warning: float = field(
         default_factory=lambda: _env_float("LEAKAGE_ROC_AUC_WARNING", 0.99)
     )
@@ -80,6 +104,31 @@ class Settings:
     )
     promote_baseline: bool = field(default_factory=lambda: _env_bool("PROMOTE_BASELINE", False))
     baseline_overwrite: bool = field(default_factory=lambda: _env_bool("BASELINE_OVERWRITE", False))
+    baseline_warning_justification: str | None = field(
+        default_factory=lambda: os.getenv("BASELINE_WARNING_JUSTIFICATION")
+    )
+    promotion_min_recall: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MIN_RECALL", 0.90)
+    )
+    promotion_max_alert_rate: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MAX_ALERT_RATE", 0.025)
+    )
+    promotion_max_oot_pr_auc_drop: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MAX_OOT_PR_AUC_DROP", 0.15)
+    )
+    promotion_max_cost_increase: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MAX_COST_INCREASE", 0.05)
+    )
+    dataset_version_override: str | None = field(default_factory=lambda: os.getenv("DATASET_VERSION"))
+    feature_set_version: str = field(
+        default_factory=lambda: os.getenv("FEATURE_SET_VERSION", "v1")
+    )
+    code_version_override: str | None = field(default_factory=lambda: os.getenv("CODE_VERSION"))
+    run_geo_ablation: bool = field(default_factory=lambda: _env_bool("RUN_GEO_ABLATION", False))
+    feature_exclusions: tuple[str, ...] = ()
+    categorical_min_frequency: int = field(
+        default_factory=lambda: int(os.getenv("CATEGORICAL_MIN_FREQUENCY", "10"))
+    )
     training_max_rows: int | None = field(
         default_factory=lambda: _env_optional_positive_int("TRAINING_MAX_ROWS", 500_000)
     )
@@ -88,6 +137,17 @@ class Settings:
     metadata_filename: str = "model_metadata.joblib"
     threshold_analysis_filename: str = "threshold_analysis.csv"
     leakage_report_filename: str = "leakage_audit.json"
+    threshold_cost_scenarios_filename: str = "threshold_cost_scenarios.csv"
+    feature_importance_filename: str = "feature_importance.csv"
+    calibration_report_filename: str = "calibration_report.csv"
+    score_deciles_filename: str = "score_deciles.csv"
+    calibration_metrics_filename: str = "calibration_metrics.json"
+    calibration_curve_filename: str = "calibration_curve.png"
+    out_of_time_metrics_filename: str = "out_of_time_metrics.json"
+    model_card_filename: str = "model_card.md"
+    baseline_decision_filename: str = "baseline_decision.json"
+    manifest_filename: str = "manifest.json"
+    geo_ablation_filename: str = "geo_ablation_results.csv"
     baseline_pipeline_filename: str = "official_pipeline.joblib"
     baseline_metadata_filename: str = "official_metadata.json"
     training_history_save_pipeline: bool = field(
@@ -170,6 +230,13 @@ class Settings:
             raise ValueError("THRESHOLD_SELECTION_STRATEGY deve ser 'business_cost' ou 'fbeta'.")
         if self.false_positive_cost < 0 or self.false_negative_cost < 0:
             raise ValueError("Custos de falso positivo e falso negativo nao podem ser negativos.")
+        if any(fp < 0 or fn < 0 for fp, fn in self.threshold_cost_scenarios):
+            raise ValueError("Cenarios de custo nao podem conter valores negativos.")
+        split_total = self.validation_size + self.test_size + self.out_of_time_size
+        if not 0 < split_total < 1:
+            raise ValueError("A soma dos splits de validacao, teste e OOT deve estar entre 0 e 1.")
+        if not 0 <= self.promotion_max_oot_pr_auc_drop <= 1:
+            raise ValueError("PROMOTION_MAX_OOT_PR_AUC_DROP deve estar entre 0 e 1.")
         object.__setattr__(self, "threshold_selection_strategy", strategy)
 
     @property
@@ -191,6 +258,31 @@ class Settings:
     def leakage_report_path(self) -> Path:
         """Path where the leakage audit is stored."""
         return self.artifacts_dir / self.leakage_report_filename
+
+    def artifact_path(self, filename: str) -> Path:
+        """Return a path inside the current artifacts directory."""
+        return self.artifacts_dir / filename
+
+    @property
+    def governance_artifact_filenames(self) -> tuple[str, ...]:
+        """Artifacts expected for a governed completed training run."""
+        return (
+            self.pipeline_filename,
+            self.metadata_filename,
+            self.threshold_analysis_filename,
+            self.threshold_cost_scenarios_filename,
+            self.leakage_report_filename,
+            self.feature_importance_filename,
+            self.calibration_report_filename,
+            self.score_deciles_filename,
+            self.calibration_metrics_filename,
+            self.calibration_curve_filename,
+            self.out_of_time_metrics_filename,
+            self.model_card_filename,
+            self.baseline_decision_filename,
+            self.manifest_filename,
+            self.geo_ablation_filename,
+        )
 
     @property
     def baseline_dir(self) -> Path:
