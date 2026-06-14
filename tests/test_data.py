@@ -53,6 +53,24 @@ def test_temporal_split_preserves_order() -> None:
     assert splits.validation["date"].max() < splits.test["date"].min()
 
 
+def test_temporal_split_keeps_equal_timestamps_in_same_partition() -> None:
+    settings = Settings(validation_size=0.2, test_size=0.2)
+    dates = list(pd.date_range("2020-01-01", periods=18, freq="D"))
+    dates[12] = dates[11]
+    frame = pd.DataFrame(
+        {
+            "date": dates,
+            "is_fraud": [0, 1] * 9,
+            "amount": range(18),
+        }
+    )
+
+    splits = TemporalSplitter(settings).split(frame)
+
+    assert splits.train["date"].max() < splits.validation["date"].min()
+    assert splits.validation["date"].max() < splits.test["date"].min()
+
+
 def test_training_data_limiter_preserves_source_order() -> None:
     """Training row limits should be applied before expensive processing."""
     transactions = pd.DataFrame({"id": range(10), "amount": range(10)})

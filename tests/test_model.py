@@ -9,6 +9,7 @@ from src.config.settings import Settings
 from src.models.evaluate import evaluate_binary_classifier
 from src.models.model_factory import ModelFactory
 from src.models.threshold import find_best_threshold
+from src.models.threshold_analysis import build_threshold_table, select_business_threshold, threshold_grid
 from src.models.train import FraudModelTrainer
 
 
@@ -37,6 +38,34 @@ def test_evaluate_includes_pr_auc_not_accuracy() -> None:
     assert "pr_auc" in metrics
     assert "recall" in metrics
     assert "accuracy" not in metrics
+
+
+def test_business_threshold_table_compares_confusion_costs() -> None:
+    """Business threshold selection should minimize configured validation cost."""
+    y_true = np.array([0, 0, 0, 1, 1])
+    y_score = np.array([0.05, 0.15, 0.25, 0.20, 0.90])
+    table = build_threshold_table(
+        y_true,
+        y_score,
+        thresholds=np.array([0.10, 0.30]),
+        beta=2.0,
+        false_positive_cost=1.0,
+        false_negative_cost=10.0,
+        split="validation",
+    )
+
+    threshold, metrics = select_business_threshold(table)
+
+    assert threshold == 0.10
+    assert {"tp", "fp", "fn", "business_cost"}.issubset(table.columns)
+    assert metrics["business_cost"] == 2.0
+
+
+def test_threshold_grid_includes_requested_endpoints() -> None:
+    grid = threshold_grid(0.08, 0.30, 0.01)
+
+    assert grid[0] == 0.08
+    assert grid[-1] == 0.30
 
 
 def test_training_pipeline_can_fit_small_dataframe() -> None:

@@ -122,6 +122,134 @@ python main.py
 
 Quando `STORAGE_BACKEND=minio`, a API e o serviço de predição tentam baixar `artifacts/fraud_pipeline.joblib` e `artifacts/model_metadata.joblib` do bucket se eles ainda não existirem localmente.
 
+## PostgreSQL
+
+O Docker Compose inclui um PostgreSQL preparado para armazenar futuramente os
+metadados de experimentos do MLflow. Configure no `.env`:
+
+```bash
+POSTGRES_DB=mlflow
+POSTGRES_USER=mlflow
+POSTGRES_PASSWORD=mlflow
+POSTGRES_PORT=5432
+```
+
+Suba o banco:
+
+```bash
+docker compose up -d postgres
+```
+
+Confira o healthcheck:
+
+```bash
+docker compose ps postgres
+```
+
+String de conexão a partir da máquina local:
+
+```text
+postgresql://mlflow:mlflow@localhost:5432/mlflow
+```
+
+Dentro da rede do Docker Compose, use o host `postgres` no lugar de `localhost`.
+Em ambientes compartilhados ou de produção, substitua a senha padrão.
+
+### Migrations
+
+As migrations usam Alembic e criam um schema isolado chamado
+`fraud_tracking`, sem interferir nas tabelas internas que o MLflow poderá criar
+no mesmo banco.
+
+Instale as dependências e suba o PostgreSQL:
+
+```bash
+pip install -r requirements.txt
+docker compose up -d postgres
+```
+
+Aplicar todas as migrations:
+
+```bash
+python -m scripts.migrate_database upgrade
+```
+
+Verificar a revisão aplicada:
+
+```bash
+python -m scripts.migrate_database current
+```
+
+Reverter a última migration:
+
+```bash
+python -m scripts.migrate_database downgrade
+```
+
+O schema contém:
+
+- `training_runs`: configuração, período, volumes, auditoria e metadata completa.
+- `run_metrics`: métricas consolidadas de validação e teste.
+- `threshold_evaluations`: TP, FP, TN, FN e custo por threshold.
+- `run_artifacts`: localização e hash dos artefatos.
+- `baseline_promotions`: histórico de modelos promovidos.
+- `fact_model_runs`: view fato com uma linha por treino, métricas de validação
+  e teste, custos, auditoria, thresholds, artefatos, baseline e rankings.
+
+Por padrão, a conexão utilizada pelas migrations é:
+
+```text
+postgresql+psycopg://mlflow:mlflow@localhost:5432/mlflow
+```
+
+Defina `DATABASE_URL` para sobrescrever a conexão.
+
+### Persistência após o treino
+
+Após salvar o histórico local, o pipeline tenta gravar automaticamente no
+PostgreSQL:
+
+- Uma linha em `training_runs`.
+- Métricas de validação e teste em `run_metrics`.
+- Toda a grade de thresholds em `threshold_evaluations`.
+- Caminhos, tamanhos e hashes em `run_artifacts`.
+
+A operação é transacional e idempotente pelo `run_id`. Se o PostgreSQL estiver
+indisponível ou as migrations ainda não tiverem sido aplicadas, o treinamento
+não falha: os arquivos continuam preservados em `artifacts/history` e um aviso
+é registrado no log.
+
+Configuração:
+
+```bash
+DATABASE_TRACKING_ENABLED=true
+DATABASE_CONNECT_TIMEOUT_SECONDS=3
+DATABASE_URL=postgresql+psycopg://mlflow:mlflow@localhost:5432/mlflow
+```
+
+Use `DATABASE_TRACKING_ENABLED=false` para trabalhar somente com o histórico
+local.
+
+Consultar a view fato:
+
+```sql
+SELECT
+    run_id,
+    model_name,
+    test_pr_auc,
+    test_fbeta,
+    test_business_cost,
+    audit_status,
+    is_active_baseline,
+    test_pr_auc_rank
+FROM fraud_tracking.fact_model_runs
+ORDER BY test_pr_auc_rank;
+```
+
+As coleções completas de thresholds, artefatos e promoções ficam disponíveis
+nas colunas JSONB `threshold_evaluations`, `artifacts` e
+`baseline_promotions`.
+
 ## Princípios de modelagem
 
 - Split temporal em treino, validação e teste.
@@ -175,6 +303,83 @@ TRAINING_MAX_ROWS=0
 
 O dataset completo exige significativamente mais memória e pode não ser
 adequado para treinamento local com scikit-learn.
+
+## Avaliação, threshold e baseline
+
+Cada treinamento gera:
+
+- `artifacts/threshold_analysis.csv`: TP, FP, TN, FN, precision, recall,
+  F-beta e custo para thresholds entre `0.08` e `0.30`, nos splits de validação
+  e teste.
+- `artifacts/leakage_audit.json`: checks temporais, features de risco e alerta
+  para ROC-AUC anormalmente alta.
+- `artifacts/model_metadata.joblib`: métricas e configuração operacional.
+- `artifacts/history/<run_id>/`: cópia imutável dos metadados, auditoria,
+  thresholds e pipeline daquela execução.
+- `artifacts/history/runs.csv`: índice consolidado para comparar todos os
+  treinamentos.
+
+O threshold é escolhido somente na validação. O split de teste é usado para
+confirmar o resultado e não deve ser usado para escolher o threshold.
+Quando o menor custo estiver em `0.08` ou `0.30`, a auditoria recomenda ampliar
+a faixa antes de aprovar o ponto operacional.
+
+Configure os custos relativos no `.env`:
+
+```bash
+THRESHOLD_SELECTION_STRATEGY=business_cost
+FALSE_POSITIVE_COST=1
+FALSE_NEGATIVE_COST=25
+THRESHOLD_ANALYSIS_START=0.08
+THRESHOLD_ANALYSIS_STOP=0.30
+THRESHOLD_ANALYSIS_STEP=0.01
+```
+
+Os valores representam custos relativos e devem refletir o negócio. Por
+exemplo, `FALSE_NEGATIVE_COST=25` considera uma fraude não detectada 25 vezes
+mais custosa que uma análise desnecessária.
+
+Para promover o modelo já treinado como baseline oficial:
+
+```bash
+python -m scripts.promote_baseline
+```
+
+O baseline é salvo em `artifacts/baseline` com hash SHA-256, métricas e relatórios.
+Ele não é sobrescrito automaticamente. Para substituir deliberadamente:
+
+```bash
+python -m scripts.promote_baseline --overwrite
+```
+
+Para listar os melhores runs históricos por PR-AUC de teste:
+
+```bash
+python -m scripts.list_training_history --sort-by test_pr_auc --limit 10
+```
+
+Depois de escolher um `run_id`, promova exatamente aquela execução:
+
+```bash
+python -m scripts.promote_baseline --run-id RUN_ID --overwrite
+```
+
+Por padrão, cada run mantém uma cópia do pipeline para reprodução e promoção.
+Use `TRAINING_HISTORY_SAVE_PIPELINE=false` apenas para economizar storage,
+aceitando que o modelo histórico não poderá ser restaurado diretamente.
+
+Também é possível promover ao final do treino com `PROMOTE_BASELINE=true`.
+Use `BASELINE_OVERWRITE=true` somente quando a substituição tiver sido aprovada.
+
+Uma auditoria com status `warning` não comprova vazamento, mas exige revisão.
+Neste dataset, atributos de snapshot como `card_on_dark_web`, `credit_score` e
+`current_age`, além de campos como `errors`, precisam ser confirmados como
+disponíveis no instante da transação.
+
+Por padrão, `STRICT_LEAKAGE_PREVENTION=true` remove do modelo identificadores,
+PII, atributos financeiros sem histórico temporal e campos potencialmente
+posteriores à autorização. Desative apenas após comprovar a disponibilidade
+dessas features no momento real da predição.
 
 ## Jupyter
 

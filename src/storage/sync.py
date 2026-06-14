@@ -37,7 +37,7 @@ class StorageSyncService:
             logger.info("Arquivo enviado para %s: %s", self.object_store.describe(), key)
         return uploaded
 
-    def upload_artifacts(self) -> list[str]:
+    def upload_artifacts(self, history_run_dir: Path | None = None) -> list[str]:
         """Upload trained model artifacts to the object store."""
         if self.settings.storage_backend == "local":
             logger.info("STORAGE_BACKEND=local; upload de artefatos ignorado.")
@@ -46,7 +46,48 @@ class StorageSyncService:
         artifacts = [
             (self.settings.pipeline_path, self.settings.pipeline_object_key),
             (self.settings.metadata_path, self.settings.metadata_object_key),
+            (
+                self.settings.threshold_analysis_path,
+                self.settings.artifact_object_key(self.settings.threshold_analysis_filename),
+            ),
+            (
+                self.settings.leakage_report_path,
+                self.settings.artifact_object_key(self.settings.leakage_report_filename),
+            ),
         ]
+        if self.settings.baseline_dir.exists():
+            artifacts.extend(
+                (
+                    path,
+                    self.settings.artifact_object_key(
+                        path.relative_to(self.settings.artifacts_dir).as_posix()
+                    ),
+                )
+                for path in self.settings.baseline_dir.iterdir()
+                if path.is_file()
+            )
+        if history_run_dir is not None:
+            artifacts.extend(
+                (
+                    path,
+                    self.settings.artifact_object_key(
+                        path.relative_to(self.settings.artifacts_dir).as_posix()
+                    ),
+                )
+                for path in history_run_dir.rglob("*")
+                if path.is_file()
+            )
+            if self.settings.training_history_index_path.exists():
+                artifacts.append(
+                    (
+                        self.settings.training_history_index_path,
+                        self.settings.artifact_object_key(
+                            self.settings.training_history_index_path.relative_to(
+                                self.settings.artifacts_dir
+                            ).as_posix()
+                        ),
+                    )
+                )
         uploaded: list[str] = []
         for local_path, key in artifacts:
             if not local_path.exists():

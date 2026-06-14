@@ -1,0 +1,39 @@
+{
+  "model_name": "logistic_regression",
+  "threshold": 0.12135603065519923,
+  "validation_metrics": {
+    "threshold": 0.12135603065519923,
+    "precision": 0.30019880715705766,
+    "recall": 0.8531073446327684,
+    "f1": 0.4441176470588235,
+    "fbeta": 0.6234516928158547,
+    "pr_auc": 0.5115993646700365,
+    "tp": 151.0,
+    "fp": 352.0,
+    "tn": 49724.0,
+    "fn": 26.0,
+    "roc_auc": 0.9964724804737477
+  },
+  "test_metrics": {
+    "threshold": 0.12135603065519923,
+    "precision": 0.3252336448598131,
+    "recall": 0.9157894736842105,
+    "f1": 0.48,
+    "fbeta": 0.6718146718146718,
+    "pr_auc": 0.4885927575530368,
+    "tp": 174.0,
+    "fp": 361.0,
+    "tn": 49702.0,
+    "fn": 16.0,
+    "roc_auc": 0.9971004954809571
+  },
+  "time_column": "date",
+  "training_max_rows": 500000,
+  "baseline": {
+    "promoted_at_utc": "2026-06-13T22:58:03.377064+00:00",
+    "pipeline_sha256": "11d14458e314ef15ce471b6bfdd306e11ffa379df6465d27b8fb078e38c20b0d",
+    "pipeline_file": "official_pipeline.joblib",
+    "reports": [],
+    "audit_status": "not_available"
+  }
+}

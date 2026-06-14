@@ -34,7 +34,7 @@ class FraudDataCleaner(BaseEstimator, TransformerMixin):
 
         for column in df.columns:
             if self._looks_like_date_column(column):
-                df[column] = pd.to_datetime(df[column], errors="coerce")
+                df[column] = pd.to_datetime(df[column], errors="coerce", format="mixed")
 
         target = self.settings.target_column
         if target in df.columns:

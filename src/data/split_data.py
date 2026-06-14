@@ -40,9 +40,13 @@ class TemporalSplitter:
 
         test_start = int(len(ordered) * (1 - self.settings.test_size))
         validation_start = int(len(ordered) * (1 - self.settings.test_size - self.settings.validation_size))
-        train = ordered.iloc[:validation_start].copy()
-        validation = ordered.iloc[validation_start:test_start].copy()
-        test = ordered.iloc[test_start:].copy()
+        validation_boundary = ordered.iloc[validation_start][time_col]
+        test_boundary = ordered.iloc[test_start][time_col]
+        train = ordered.loc[ordered[time_col] < validation_boundary].copy()
+        validation = ordered.loc[
+            ordered[time_col].ge(validation_boundary) & ordered[time_col].lt(test_boundary)
+        ].copy()
+        test = ordered.loc[ordered[time_col].ge(test_boundary)].copy()
 
         if train.empty or validation.empty or test.empty:
             raise ValueError("Split temporal gerou particao vazia; ajuste validation_size/test_size.")

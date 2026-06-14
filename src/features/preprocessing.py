@@ -24,6 +24,21 @@ RAW_ID_HINTS = (
     "account_number",
     "merchant_id",
 )
+SENSITIVE_FEATURES = {"address", "card_number", "cvv"}
+SNAPSHOT_FEATURES = {
+    "card_on_dark_web",
+    "credit_limit",
+    "credit_score",
+    "current_age",
+    "num_cards_issued",
+    "num_credit_cards",
+    "per_capita_income",
+    "retirement_age",
+    "total_debt",
+    "year_pin_last_changed",
+    "yearly_income",
+}
+POST_EVENT_FEATURES = {"errors"}
 
 
 def columns_to_drop(columns: Iterable[str], settings: Settings) -> list[str]:
@@ -33,7 +48,11 @@ def columns_to_drop(columns: Iterable[str], settings: Settings) -> list[str]:
         lower = column.lower()
         if lower == settings.target_column:
             drop.append(column)
-        elif lower in RAW_ID_HINTS or lower.endswith("_id"):
+        elif lower in RAW_ID_HINTS or lower.endswith("_id") or "_id_" in lower:
+            drop.append(column)
+        elif lower in SENSITIVE_FEATURES:
+            drop.append(column)
+        elif settings.strict_leakage_prevention and lower in SNAPSHOT_FEATURES | POST_EVENT_FEATURES:
             drop.append(column)
         elif any(token in lower for token in ("date", "timestamp", "datetime", "expires", "acct_open")):
             drop.append(column)

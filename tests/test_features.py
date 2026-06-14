@@ -58,3 +58,24 @@ def test_preprocessor_drops_raw_ids() -> None:
     assert "card_id" in drop_cols
     assert "merchant_id" in drop_cols
     assert preprocessor is not None
+
+
+def test_preprocessor_drops_sensitive_and_snapshot_features_in_strict_mode() -> None:
+    settings = Settings(strict_leakage_prevention=True)
+    frame = pd.DataFrame(
+        {
+            "amount": [10.0],
+            "address": ["Example"],
+            "cvv": [123],
+            "card_on_dark_web": ["No"],
+            "credit_score": [750],
+            "errors": ["Bad PIN"],
+            "client_id_card": [42],
+        }
+    )
+
+    drop_cols = columns_to_drop(frame.columns, settings)
+
+    assert {"address", "cvv", "card_on_dark_web", "credit_score", "errors", "client_id_card"} <= set(
+        drop_cols
+    )

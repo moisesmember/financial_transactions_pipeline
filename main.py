@@ -17,6 +17,9 @@ def main() -> None:
     logger.info("Metricas de validacao: %s", result.validation_metrics)
     logger.info("Metricas de teste: %s", result.test_metrics)
     logger.info("Pipeline salva em: %s", result.pipeline_path)
+    logger.info("Analise de thresholds salva em: %s", result.threshold_analysis_path)
+    logger.info("Auditoria de leakage salva em: %s", result.leakage_report_path)
+    logger.info("Historico do treino salvo | run_id=%s | diretorio=%s", result.run_id, result.history_run_dir)
 
 
 if __name__ == "__main__":
