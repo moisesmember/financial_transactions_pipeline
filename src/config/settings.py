@@ -324,11 +324,25 @@ class Settings:
             raise ValueError("Custos de falso positivo e falso negativo nao podem ser negativos.")
         if any(fp < 0 or fn < 0 for fp, fn in self.threshold_cost_scenarios):
             raise ValueError("Cenarios de custo nao podem conter valores negativos.")
+        if not 0 <= self.threshold_analysis_start < self.threshold_analysis_stop <= 1:
+            raise ValueError(
+                "THRESHOLD_ANALYSIS_START e STOP devem respeitar 0 <= START < STOP <= 1."
+            )
+        if self.threshold_analysis_step <= 0:
+            raise ValueError("THRESHOLD_ANALYSIS_STEP deve ser positivo.")
+        if not 0 <= self.leakage_roc_auc_warning <= 1:
+            raise ValueError("LEAKAGE_ROC_AUC_WARNING deve estar entre 0 e 1.")
         split_total = self.validation_size + self.test_size + self.out_of_time_size
         if not 0 < split_total < 1:
             raise ValueError("A soma dos splits de validacao, teste e OOT deve estar entre 0 e 1.")
+        if not 0 <= self.promotion_min_recall <= 1:
+            raise ValueError("PROMOTION_MIN_RECALL deve estar entre 0 e 1.")
+        if not 0 <= self.promotion_max_alert_rate <= 1:
+            raise ValueError("PROMOTION_MAX_ALERT_RATE deve estar entre 0 e 1.")
         if not 0 <= self.promotion_max_oot_pr_auc_drop <= 1:
             raise ValueError("PROMOTION_MAX_OOT_PR_AUC_DROP deve estar entre 0 e 1.")
+        if self.promotion_max_cost_increase < 0:
+            raise ValueError("PROMOTION_MAX_COST_INCREASE nao pode ser negativo.")
         object.__setattr__(self, "threshold_selection_strategy", strategy)
 
     @property

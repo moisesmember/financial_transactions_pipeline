@@ -547,6 +547,49 @@ uvicorn src.api.app:app --reload
 
 A documentação Swagger fica disponível em `http://localhost:8000/docs`.
 
+Para iniciar um treinamento governado pela API:
+
+```bash
+curl -X POST "http://localhost:8000/training-runs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "THRESHOLD_SELECTION_STRATEGY": "business_cost",
+    "THRESHOLD_ANALYSIS_START": 0.05,
+    "THRESHOLD_ANALYSIS_STOP": 0.80,
+    "THRESHOLD_ANALYSIS_STEP": 0.01,
+    "FALSE_POSITIVE_COST": 1,
+    "FALSE_NEGATIVE_COST": 25,
+    "THRESHOLD_COST_SCENARIOS": "1:10,1:25,1:50,5:25",
+    "OUT_OF_TIME_SIZE": 0.10,
+    "LEAKAGE_ROC_AUC_WARNING": 0.99,
+    "STRICT_LEAKAGE_PREVENTION": true,
+    "PROMOTE_BASELINE": false,
+    "BASELINE_OVERWRITE": false,
+    "RUN_GEO_ABLATION": false,
+    "TRAINING_HISTORY_SAVE_PIPELINE": true,
+    "TRAINING_MAX_ROWS": 500000,
+    "BASELINE_WARNING_JUSTIFICATION": "",
+    "PROMOTION_MIN_RECALL": 0.90,
+    "PROMOTION_MAX_ALERT_RATE": 0.025,
+    "PROMOTION_MAX_OOT_PR_AUC_DROP": 0.15,
+    "PROMOTION_MAX_COST_INCREASE": 0.05
+  }'
+```
+
+A rota retorna `202 Accepted` e um `job_id`. Consulte o andamento:
+
+```bash
+curl "http://localhost:8000/training-runs/JOB_ID"
+```
+
+Todos os campos do body são opcionais. Campos ausentes ou `null` mantêm os
+valores resolvidos do `.env`; `TRAINING_MAX_ROWS=0` processa o dataset completo.
+Os nomes também podem ser enviados em `snake_case`. Apenas um treinamento pode
+executar por processo da API. Cada job usa staging isolado em
+`.runtime/training/<job_id>` para não disputar arquivos com a inferência. Em
+produção, proteja essa rota com autenticação e execute a API com um único worker
+ou substitua o gerenciador em memória por uma fila distribuída.
+
 Para exportar em JSON todas as colunas da view
 `fraud_tracking.fact_model_runs`:
 
