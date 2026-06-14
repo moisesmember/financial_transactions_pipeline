@@ -156,6 +156,9 @@ class TrainingHistoryRegistry:
             "code_version": metadata.get("code_version"),
             "experiment_fingerprint": metadata.get("experiment_fingerprint"),
             "promotion_decision": metadata.get("baseline_decision", {}).get("decision"),
+            "model_selection_engine": metadata.get("model_selection", {}).get("engine"),
+            "model_selection_objective": metadata.get("model_selection", {}).get("objective"),
+            "model_selection_trial_count": metadata.get("model_selection", {}).get("trial_count"),
             "run_directory": run_dir.relative_to(self.settings.artifacts_dir).as_posix(),
         }
 

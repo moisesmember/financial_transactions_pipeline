@@ -21,6 +21,8 @@ GEO_ALL = GEO_CORE + ("zip", "latitude", "longitude")
 def run_geographic_ablation(
     settings: Settings,
     parent_run_id: str,
+    model_name: str,
+    model_params: dict,
     X_train: pd.DataFrame,
     y_train: pd.Series,
     X_validation: pd.DataFrame,
@@ -59,7 +61,12 @@ def run_geographic_ablation(
             run_geo_ablation=False,
             feature_set_version=f"{settings.feature_set_version}:{experiment_group}",
         )
-        pipeline = FraudModelTrainer(experiment_settings).train(X_train, y_train)
+        pipeline = FraudModelTrainer(experiment_settings).train(
+            X_train,
+            y_train,
+            model_name=model_name,
+            model_params=model_params,
+        )
         validation_scores = pipeline.predict_proba(X_validation)[:, 1]
         validation_table = build_threshold_table(
             y_validation.to_numpy(),

@@ -49,6 +49,10 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
         threshold_analysis_stop=0.90,
         threshold_analysis_step=0.20,
         categorical_min_frequency=2,
+        optuna_model_candidates=("logistic_regression",),
+        optuna_trials=2,
+        optuna_timeout_seconds=60,
+        external_benchmarks_enabled=False,
     )
 
     result = TrainingPipeline(settings).run()
@@ -60,6 +64,9 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
     assert result.out_of_time_metrics["pr_auc"] >= 0
     assert metadata["dataset"]["out_of_time_rows"] > 0
     assert metadata["dataset_version"]
+    assert metadata["model_selection"]["engine"] == "optuna"
+    assert metadata["model_selection"]["trial_count"] == 2
+    assert metadata["model_name"] == "logistic_regression"
     assert decision["decision"] in {"promote", "keep_candidate", "reject"}
     for filename in settings.governance_artifact_filenames:
         if filename == settings.geo_ablation_filename:

@@ -2,6 +2,10 @@
 
 Projeto Python modular para treino, avaliação, ajuste de threshold e serving de um modelo de detecção de fraude usando o dataset do Kaggle "Financial Transactions Dataset: Analytics".
 
+A seleção principal usa Optuna para comparar famílias e hiperparâmetros sklearn
+somente com treino e validação temporal. AutoGluon, H2O AutoML e FLAML podem ser
+executados como benchmarks externos nos mesmos splits e custos operacionais.
+
 Fonte de referência: https://www.kaggle.com/datasets/computingvictor/transactions-fraud-datasets
 
 ## Estrutura
@@ -196,6 +200,9 @@ O schema contém:
 - `leakage_audit_checks`: checks individualizados e suas severidades.
 - `model_features`: coeficientes/importâncias e classificação das features.
 - `robustness_experiments`: resultados das ablações geográficas A-D.
+- `model_search_trials`: trials, parâmetros e métricas da seleção Optuna.
+- `external_benchmark_results`: leaderboard normalizado de AutoGluon, H2O,
+  FLAML e do vencedor sklearn.
 - `model_predictions`, `operational_feedback` e `drift_metrics`: base para
   monitoramento pós-produção.
 - `fact_model_runs`: view fato com uma linha por treino, métricas de validação
@@ -293,6 +300,16 @@ pytest
 uvicorn src.api.app:app --reload
 ```
 
+Para instalar também os benchmarks externos:
+
+```bash
+pip install -r requirements-benchmarks.txt
+```
+
+AutoGluon e H2O são recomendados em Linux/WSL; H2O também requer uma JVM
+compatível. Uma dependência ausente é registrada como `unavailable` e não
+interrompe o treino principal.
+
 Por padrão, `python main.py` limita a `500000` as transações usadas no merge e
 no treino, evitando esgotar a memória nas etapas mais pesadas em ambientes
 locais. Ajuste no `.env` conforme a RAM disponível:
@@ -314,6 +331,13 @@ adequado para treinamento local com scikit-learn.
 
 Cada treinamento gera:
 
+- `artifacts/optuna_trials.csv`: parâmetros, PR-AUC, threshold, custo e estado
+  de todos os trials.
+- `artifacts/optuna_study.json`: vencedor, parâmetros, seed e objetivo da busca.
+- `artifacts/external_benchmark_results.csv`: comparação do vencedor sklearn
+  com AutoGluon, H2O e FLAML em validação, teste e OOT.
+- `artifacts/external_benchmark_summary.json`: status, duração e modelo líder
+  de cada framework.
 - `artifacts/threshold_analysis.csv`: grade principal entre `0.05` e `0.80`
   para validação, teste e OOT.
 - `artifacts/threshold_cost_scenarios.csv`: melhores pontos para os cenários
@@ -337,6 +361,44 @@ Cada treinamento gera:
 O threshold é escolhido somente na validação. Teste e OOT confirmam desempenho,
 estabilidade temporal, custo e capacidade operacional. Um threshold no limite
 da grade bloqueia a promoção automática.
+
+### Seleção de modelo com Optuna
+
+Por padrão, Optuna compara `logistic_regression`, `random_forest` e
+`hist_gradient_boosting`. O objetivo é maximizar PR-AUC na validação temporal.
+Cada trial também registra precision, recall, alert rate, custo e o threshold
+de menor custo. Teste e OOT nunca participam da busca.
+
+```bash
+MODEL_SELECTION_ENGINE=optuna
+OPTUNA_MODEL_CANDIDATES=logistic_regression,random_forest,hist_gradient_boosting
+OPTUNA_TRIALS=15
+OPTUNA_TIMEOUT_SECONDS=900
+OPTUNA_N_JOBS=1
+```
+
+Use `OPTUNA_N_JOBS=1` para maior reprodutibilidade e controle de memória. Para
+treinar somente o modelo configurado:
+
+```bash
+MODEL_SELECTION_ENGINE=fixed
+MODEL_NAME=logistic_regression
+```
+
+### Benchmarks externos
+
+```bash
+EXTERNAL_BENCHMARKS_ENABLED=true
+EXTERNAL_BENCHMARK_BACKENDS=autogluon,h2o,flaml
+EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS=300
+EXTERNAL_BENCHMARK_MAX_MODELS=10
+EXTERNAL_BENCHMARK_FAIL_FAST=false
+```
+
+Os benchmarks recebem as mesmas features governadas e usam somente
+treino/validação para ajuste. O threshold é selecionado na validação e aplicado
+em teste/OOT. Os resultados são comparativos: um benchmark externo não é
+promovido automaticamente nem substitui `fraud_pipeline.joblib`.
 
 Configure os custos relativos no `.env`:
 

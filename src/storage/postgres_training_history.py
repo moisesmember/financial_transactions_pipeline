@@ -30,6 +30,8 @@ OPTIONAL_TABLES = {
     "leakage_audit_checks",
     "model_features",
     "robustness_experiments",
+    "model_search_trials",
+    "external_benchmark_results",
 }
 
 
@@ -96,6 +98,18 @@ class PostgresTrainingHistoryRepository:
                     run_dir,
                 )
                 self._insert_robustness_experiments(connection, metadata, run_dir)
+                self._insert_model_search_trials(
+                    connection,
+                    metadata,
+                    historical_metadata["run"]["run_id"],
+                    run_dir,
+                )
+                self._insert_external_benchmarks(
+                    connection,
+                    metadata,
+                    historical_metadata["run"]["run_id"],
+                    run_dir,
+                )
                 decision = historical_metadata.get("baseline_decision", {}).get("decision")
                 if (
                     self.settings.promote_baseline
@@ -176,6 +190,15 @@ class PostgresTrainingHistoryRepository:
                 "promotion_reason": historical_metadata.get("baseline_decision", {}).get(
                     "reasons"
                 ),
+                "model_selection_engine": historical_metadata.get("model_selection", {}).get(
+                    "engine"
+                ),
+                "model_selection_objective": historical_metadata.get(
+                    "model_selection", {}
+                ).get("objective"),
+                "model_selection_trial_count": historical_metadata.get(
+                    "model_selection", {}
+                ).get("trial_count"),
             },
         )
         statement = insert(table).values(**values)
@@ -398,6 +421,102 @@ class PostgresTrainingHistoryRepository:
             )
         )
 
+    def _insert_model_search_trials(
+        self,
+        connection,
+        metadata: MetaData,
+        run_id: str,
+        run_dir: Path,
+    ) -> None:
+        key = f"{SCHEMA}.model_search_trials"
+        path = run_dir / self.settings.optuna_trials_filename
+        if key not in metadata.tables or not path.exists() or path.stat().st_size == 0:
+            return
+        try:
+            frame = pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return
+        if frame.empty:
+            return
+        table = metadata.tables[key]
+        rows = []
+        for record in frame.where(pd.notna(frame), None).to_dict(orient="records"):
+            raw_params = record.get("model_params")
+            record["model_params"] = json.loads(raw_params) if raw_params else {}
+            rows.append(self._supported_values(table, {"run_id": run_id, **record}))
+        statement = insert(table).values(rows)
+        connection.execute(
+            statement.on_conflict_do_update(
+                index_elements=["run_id", "trial_number"],
+                set_={
+                    column.name: getattr(statement.excluded, column.name)
+                    for column in table.columns
+                    if column.name not in {"run_id", "trial_number", "created_at"}
+                },
+            )
+        )
+
+    def _insert_external_benchmarks(
+        self,
+        connection,
+        metadata: MetaData,
+        run_id: str,
+        run_dir: Path,
+    ) -> None:
+        key = f"{SCHEMA}.external_benchmark_results"
+        if key not in metadata.tables:
+            return
+        table = metadata.tables[key]
+        rows: list[dict[str, Any]] = []
+        results_path = run_dir / self.settings.external_benchmark_filename
+        if results_path.exists() and results_path.stat().st_size > 0:
+            try:
+                results = pd.read_csv(results_path)
+            except pd.errors.EmptyDataError:
+                results = pd.DataFrame()
+            for record in results.where(pd.notna(results), None).to_dict(orient="records"):
+                rows.append(
+                    self._supported_values(
+                        table,
+                        {"run_id": run_id, "status": "completed", **record},
+                    )
+                )
+        summary_path = run_dir / self.settings.external_benchmark_summary_filename
+        if summary_path.exists():
+            summaries = json.loads(summary_path.read_text(encoding="utf-8"))
+            for summary in summaries:
+                backend = summary.get("backend")
+                if not backend:
+                    continue
+                rows.append(
+                    self._supported_values(
+                        table,
+                        {
+                            "run_id": run_id,
+                            "backend": backend,
+                            "split": "summary",
+                            "status": summary.get("status", "unknown"),
+                            "framework_model": summary.get("framework_model"),
+                            "duration_seconds": summary.get("duration_seconds"),
+                            "message": summary.get("message"),
+                            "metadata": summary.get("metadata"),
+                        },
+                    )
+                )
+        if not rows:
+            return
+        statement = insert(table).values(rows)
+        connection.execute(
+            statement.on_conflict_do_update(
+                index_elements=["run_id", "backend", "split"],
+                set_={
+                    column.name: getattr(statement.excluded, column.name)
+                    for column in table.columns
+                    if column.name not in {"run_id", "backend", "split", "created_at"}
+                },
+            )
+        )
+
     @staticmethod
     def _insert_baseline_promotion(
         connection,
@@ -464,6 +583,10 @@ class PostgresTrainingHistoryRepository:
             self.settings.baseline_decision_filename: "baseline_decision",
             self.settings.manifest_filename: "manifest",
             self.settings.geo_ablation_filename: "geo_ablation",
+            self.settings.optuna_trials_filename: "optuna_trials",
+            self.settings.optuna_study_filename: "optuna_study",
+            self.settings.external_benchmark_filename: "external_benchmark_results",
+            self.settings.external_benchmark_summary_filename: "external_benchmark_summary",
         }
         return mapping.get(path.name, "other")
 

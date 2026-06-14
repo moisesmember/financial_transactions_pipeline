@@ -60,6 +60,14 @@ def _env_cost_scenarios(
     return tuple(scenarios)
 
 
+def _env_csv(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """Parse a comma-separated environment variable."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return tuple(item.strip().lower() for item in value.split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     """Centralized configuration for paths, data columns and modeling."""
@@ -67,7 +75,39 @@ class Settings:
     project_root: Path = field(default_factory=lambda: Path(__file__).resolve().parents[2])
     raw_data_dir: Path | None = None
     artifacts_dir: Path | None = None
-    model_name: str = "logistic_regression"
+    model_name: str = field(default_factory=lambda: os.getenv("MODEL_NAME", "logistic_regression"))
+    model_selection_engine: str = field(
+        default_factory=lambda: os.getenv("MODEL_SELECTION_ENGINE", "optuna")
+    )
+    optuna_model_candidates: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv(
+            "OPTUNA_MODEL_CANDIDATES",
+            ("logistic_regression", "random_forest", "hist_gradient_boosting"),
+        )
+    )
+    optuna_trials: int = field(default_factory=lambda: int(os.getenv("OPTUNA_TRIALS", "15")))
+    optuna_timeout_seconds: int | None = field(
+        default_factory=lambda: _env_optional_positive_int("OPTUNA_TIMEOUT_SECONDS", 900)
+    )
+    optuna_n_jobs: int = field(default_factory=lambda: int(os.getenv("OPTUNA_N_JOBS", "1")))
+    external_benchmarks_enabled: bool = field(
+        default_factory=lambda: _env_bool("EXTERNAL_BENCHMARKS_ENABLED", True)
+    )
+    external_benchmark_backends: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv(
+            "EXTERNAL_BENCHMARK_BACKENDS",
+            ("autogluon", "h2o", "flaml"),
+        )
+    )
+    external_benchmark_time_limit_seconds: int = field(
+        default_factory=lambda: int(os.getenv("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS", "300"))
+    )
+    external_benchmark_max_models: int = field(
+        default_factory=lambda: int(os.getenv("EXTERNAL_BENCHMARK_MAX_MODELS", "10"))
+    )
+    external_benchmark_fail_fast: bool = field(
+        default_factory=lambda: _env_bool("EXTERNAL_BENCHMARK_FAIL_FAST", False)
+    )
     random_state: int = 42
     validation_size: float = 0.15
     test_size: float = 0.15
@@ -148,6 +188,10 @@ class Settings:
     baseline_decision_filename: str = "baseline_decision.json"
     manifest_filename: str = "manifest.json"
     geo_ablation_filename: str = "geo_ablation_results.csv"
+    optuna_trials_filename: str = "optuna_trials.csv"
+    optuna_study_filename: str = "optuna_study.json"
+    external_benchmark_filename: str = "external_benchmark_results.csv"
+    external_benchmark_summary_filename: str = "external_benchmark_summary.json"
     baseline_pipeline_filename: str = "official_pipeline.joblib"
     baseline_metadata_filename: str = "official_metadata.json"
     training_history_save_pipeline: bool = field(
@@ -225,6 +269,39 @@ class Settings:
         object.__setattr__(self, "raw_data_prefix", self.raw_data_prefix.strip("/"))
         object.__setattr__(self, "artifacts_prefix", self.artifacts_prefix.strip("/"))
         object.__setattr__(self, "kaggle_dataset", self.kaggle_dataset.strip().strip("/"))
+        object.__setattr__(self, "model_name", self.model_name.strip().lower())
+        object.__setattr__(
+            self,
+            "model_selection_engine",
+            self.model_selection_engine.strip().lower(),
+        )
+        if self.model_selection_engine not in {"fixed", "optuna"}:
+            raise ValueError("MODEL_SELECTION_ENGINE deve ser 'fixed' ou 'optuna'.")
+        supported_models = set(self.model_params)
+        if self.model_name not in supported_models:
+            raise ValueError(f"MODEL_NAME nao suportado: {self.model_name}.")
+        if not self.optuna_model_candidates:
+            raise ValueError("OPTUNA_MODEL_CANDIDATES nao pode ser vazio.")
+        unknown_models = set(self.optuna_model_candidates) - supported_models
+        if unknown_models:
+            raise ValueError(
+                "Modelos Optuna nao suportados: " + ", ".join(sorted(unknown_models))
+            )
+        if self.optuna_trials < 1:
+            raise ValueError("OPTUNA_TRIALS deve ser positivo.")
+        if self.optuna_n_jobs == 0:
+            raise ValueError("OPTUNA_N_JOBS nao pode ser zero.")
+        if self.external_benchmark_time_limit_seconds < 1:
+            raise ValueError("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS deve ser positivo.")
+        if self.external_benchmark_max_models < 1:
+            raise ValueError("EXTERNAL_BENCHMARK_MAX_MODELS deve ser positivo.")
+        supported_benchmarks = {"autogluon", "h2o", "flaml"}
+        unknown_benchmarks = set(self.external_benchmark_backends) - supported_benchmarks
+        if unknown_benchmarks:
+            raise ValueError(
+                "Benchmarks externos nao suportados: "
+                + ", ".join(sorted(unknown_benchmarks))
+            )
         strategy = self.threshold_selection_strategy.strip().lower()
         if strategy not in {"business_cost", "fbeta"}:
             raise ValueError("THRESHOLD_SELECTION_STRATEGY deve ser 'business_cost' ou 'fbeta'.")
@@ -282,6 +359,10 @@ class Settings:
             self.baseline_decision_filename,
             self.manifest_filename,
             self.geo_ablation_filename,
+            self.optuna_trials_filename,
+            self.optuna_study_filename,
+            self.external_benchmark_filename,
+            self.external_benchmark_summary_filename,
         )
 
     @property
@@ -352,6 +433,7 @@ class Settings:
                 "learning_rate": 0.05,
                 "max_iter": 250,
                 "l2_regularization": 0.1,
+                "class_weight": "balanced",
                 "random_state": self.random_state,
             },
         }

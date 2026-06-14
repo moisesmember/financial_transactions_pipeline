@@ -52,11 +52,15 @@ class ModelFactory:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def create(self, model_name: str | None = None) -> ClassifierMixin:
+    def create(
+        self,
+        model_name: str | None = None,
+        params: dict | None = None,
+    ) -> ClassifierMixin:
         """Create a model by name."""
         name = model_name or self.settings.model_name
         if name not in self._strategies:
             supported = ", ".join(sorted(self._strategies))
             raise ValueError(f"Modelo nao suportado: {name}. Suportados: {supported}")
-        params = self.settings.model_params.get(name, {})
-        return self._strategies[name].create(params)
+        configured_params = {**self.settings.model_params.get(name, {}), **(params or {})}
+        return self._strategies[name].create(configured_params)

@@ -21,9 +21,11 @@ from src.models.baseline import BaselineRegistry
 from src.models.baseline_decision import BaselineDecisionService
 from src.models.calibration import write_calibration_artifacts
 from src.models.evaluate import evaluate_binary_classifier
+from src.models.external_benchmarks import ExternalBenchmarkRunner
 from src.models.feature_report import build_feature_importance
 from src.models.governance_artifacts import write_manifest, write_model_card
 from src.models.leakage_audit import LeakageAuditService
+from src.models.optuna_search import OptunaModelSelector
 from src.models.robustness import run_geographic_ablation
 from src.models.threshold import find_best_threshold
 from src.models.threshold_analysis import (
@@ -70,7 +72,6 @@ class TrainingPipeline:
     def run(self) -> TrainingResult:
         """Load data, merge, split, train, tune threshold, evaluate and persist."""
         started_at = datetime.now(timezone.utc)
-        run_id = TrainingHistoryRegistry.new_run_id(self.settings.model_name)
         self.settings.artifacts_dir.mkdir(parents=True, exist_ok=True)
         if self.settings.kaggle_auto_import:
             DatasetImportService(self.settings).import_data()
@@ -97,7 +98,50 @@ class TrainingPipeline:
             raise ValueError("O split out-of-time e obrigatorio para o treinamento governado.")
         X_out_of_time, y_out_of_time = self._split_xy(splits.out_of_time)
 
-        pipeline = FraudModelTrainer(self.settings).train(X_train, y_train)
+        if self.settings.model_selection_engine == "optuna":
+            selection = OptunaModelSelector(self.settings).select(
+                X_train,
+                y_train,
+                X_val,
+                y_val,
+                trials_path=self.settings.artifact_path(self.settings.optuna_trials_filename),
+                study_path=self.settings.artifact_path(self.settings.optuna_study_filename),
+            )
+            pipeline = selection.pipeline
+            selected_model_name = selection.model_name
+            selected_model_params = selection.model_params
+            selection_metadata = {
+                "engine": "optuna",
+                "objective": "validation_pr_auc",
+                "validation_pr_auc": selection.validation_pr_auc,
+                "trial_count": selection.trial_count,
+            }
+        else:
+            selected_model_name = self.settings.model_name
+            selected_model_params = self.settings.model_params[selected_model_name]
+            pipeline = FraudModelTrainer(self.settings).train(
+                X_train,
+                y_train,
+                model_name=selected_model_name,
+                model_params=selected_model_params,
+            )
+            pd.DataFrame().to_csv(
+                self.settings.artifact_path(self.settings.optuna_trials_filename),
+                index=False,
+            )
+            self.settings.artifact_path(self.settings.optuna_study_filename).write_text(
+                json.dumps(
+                    {
+                        "engine": "fixed",
+                        "model_name": selected_model_name,
+                        "model_params": selected_model_params,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            selection_metadata = {"engine": "fixed", "trial_count": 0}
+        run_id = TrainingHistoryRegistry.new_run_id(selected_model_name)
         validation_scores = self._predict_scores(pipeline, X_val)
         thresholds = threshold_grid(
             self.settings.threshold_analysis_start,
@@ -208,6 +252,8 @@ class TrainingPipeline:
             run_geographic_ablation(
                 self.settings,
                 run_id,
+                selected_model_name,
+                selected_model_params,
                 X_train,
                 y_train,
                 X_val,
@@ -220,6 +266,84 @@ class TrainingPipeline:
                 self.settings.artifact_path(self.settings.geo_ablation_filename),
                 index=False,
             )
+        benchmark_runner = ExternalBenchmarkRunner(self.settings)
+        benchmark_results_path = self.settings.artifact_path(
+            self.settings.external_benchmark_filename
+        )
+        benchmark_summary_path = self.settings.artifact_path(
+            self.settings.external_benchmark_summary_filename
+        )
+        if self.settings.external_benchmarks_enabled:
+            benchmark_dataset = benchmark_runner.prepare_dataset(
+                pipeline,
+                X_train,
+                y_train,
+                X_val,
+                y_val,
+                X_test,
+                y_test,
+                X_out_of_time,
+                y_out_of_time,
+            )
+            external_benchmark_summary = benchmark_runner.run(
+                benchmark_dataset,
+                results_path=benchmark_results_path,
+                summary_path=benchmark_summary_path,
+                output_dir=self.settings.artifacts_dir / "external_benchmarks" / run_id,
+            )
+        else:
+            pd.DataFrame().to_csv(benchmark_results_path, index=False)
+            external_benchmark_summary = [{"status": "disabled"}]
+            benchmark_summary_path.write_text(
+                json.dumps(external_benchmark_summary, indent=2),
+                encoding="utf-8",
+            )
+        try:
+            external_rows = pd.read_csv(benchmark_results_path)
+        except pd.errors.EmptyDataError:
+            external_rows = pd.DataFrame()
+        internal_rows = pd.DataFrame(
+            [
+                {
+                    "backend": "optuna_sklearn",
+                    "framework_model": selected_model_name,
+                    "split": split,
+                    **metrics,
+                    "business_cost": (
+                        metrics["fp"] * self.settings.false_positive_cost
+                        + metrics["fn"] * self.settings.false_negative_cost
+                    ),
+                }
+                for split, metrics in (
+                    ("validation", validation_metrics),
+                    ("test", test_metrics),
+                    ("out_of_time", out_of_time_metrics),
+                )
+            ]
+        )
+        pd.concat([internal_rows, external_rows], ignore_index=True).to_csv(
+            benchmark_results_path,
+            index=False,
+        )
+        external_benchmark_summary.insert(
+            0,
+            {
+                "backend": "optuna_sklearn",
+                "status": "completed",
+                "framework_model": selected_model_name,
+                "selection_engine": self.settings.model_selection_engine,
+            },
+        )
+        benchmark_summary_path.write_text(
+            json.dumps(
+                external_benchmark_summary,
+                indent=2,
+                ensure_ascii=True,
+                allow_nan=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
         write_calibration_artifacts(
             {
                 "validation": (y_val.to_numpy(), validation_scores),
@@ -241,15 +365,18 @@ class TrainingPipeline:
             "dataset_version": dataset_version,
             "feature_set_version": self.settings.feature_set_version,
             "code_version": current_code_version,
-            "model_name": self.settings.model_name,
-            "model_params": self.settings.model_params[self.settings.model_name],
+            "model_name": selected_model_name,
+            "model_params": selected_model_params,
             "random_state": self.settings.random_state,
             "training_max_rows": self.settings.training_max_rows,
         }
         metadata = {
             "run_id": run_id,
             "status": "completed",
-            "model_name": self.settings.model_name,
+            "model_name": selected_model_name,
+            "model_params": selected_model_params,
+            "model_selection": selection_metadata,
+            "external_benchmarks": external_benchmark_summary,
             "threshold": threshold,
             "validation_metrics": validation_metrics,
             "test_metrics": test_metrics,
@@ -314,6 +441,8 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.calibration_report_filename),
             self.settings.artifact_path(self.settings.score_deciles_filename),
             self.settings.artifact_path(self.settings.out_of_time_metrics_filename),
+            self.settings.artifact_path(self.settings.optuna_trials_filename),
+            self.settings.artifact_path(self.settings.optuna_study_filename),
         ]
         baseline_decision = BaselineDecisionService(self.settings).decide(
             metadata,
@@ -384,7 +513,7 @@ class TrainingPipeline:
         StorageSyncService(self.settings).upload_artifacts(history_run_dir=history_run_dir)
 
         return TrainingResult(
-            model_name=self.settings.model_name,
+            model_name=selected_model_name,
             threshold=threshold,
             validation_metrics=validation_metrics,
             test_metrics=test_metrics,

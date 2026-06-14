@@ -31,6 +31,12 @@ ROBUSTNESS_MIGRATION_PATH = (
     / "versions"
     / "20260614_0004_add_robustness_experiments.py"
 )
+MODEL_SEARCH_MIGRATION_PATH = (
+    PROJECT_ROOT
+    / "migrations"
+    / "versions"
+    / "20260614_0005_add_model_search_tracking.py"
+)
 
 
 def test_initial_migration_has_expected_revision_and_operations() -> None:
@@ -87,3 +93,12 @@ def test_robustness_migration_tracks_geo_ablation_experiments() -> None:
     assert 'revision: str = "20260614_0004"' in content
     assert 'down_revision: str | None = "20260614_0003"' in content
     assert '"robustness_experiments"' in content
+
+
+def test_model_search_migration_tracks_optuna_and_external_benchmarks() -> None:
+    content = MODEL_SEARCH_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert 'revision: str = "20260614_0005"' in content
+    assert 'down_revision: str | None = "20260614_0004"' in content
+    assert '"model_search_trials"' in content
+    assert '"external_benchmark_results"' in content

@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, StandardScaler
 
 from src.config.settings import Settings
 
@@ -61,7 +61,11 @@ def columns_to_drop(columns: Iterable[str], settings: Settings) -> list[str]:
     return sorted(set(drop))
 
 
-def build_preprocessor(sample: pd.DataFrame, settings: Settings) -> ColumnTransformer:
+def build_preprocessor(
+    sample: pd.DataFrame,
+    settings: Settings,
+    model_name: str | None = None,
+) -> ColumnTransformer:
     """Build a ColumnTransformer from a transformed training sample."""
     drop_cols = columns_to_drop(sample.columns, settings)
     features = sample.drop(columns=[col for col in drop_cols if col in sample.columns], errors="ignore")
@@ -74,16 +78,22 @@ def build_preprocessor(sample: pd.DataFrame, settings: Settings) -> ColumnTransf
             ("scaler", StandardScaler()),
         ]
     )
+    selected_model = model_name or settings.model_name
+    if selected_model == "hist_gradient_boosting":
+        categorical_encoder = OrdinalEncoder(
+            handle_unknown="use_encoded_value",
+            unknown_value=-1,
+            encoded_missing_value=-1,
+        )
+    else:
+        categorical_encoder = OneHotEncoder(
+            handle_unknown="ignore",
+            min_frequency=settings.categorical_min_frequency,
+        )
     categorical_pipeline = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
-            (
-                "encoder",
-                OneHotEncoder(
-                    handle_unknown="ignore",
-                    min_frequency=settings.categorical_min_frequency,
-                ),
-            ),
+            ("encoder", categorical_encoder),
         ]
     )
 
@@ -95,4 +105,5 @@ def build_preprocessor(sample: pd.DataFrame, settings: Settings) -> ColumnTransf
         ],
         remainder="drop",
         verbose_feature_names_out=False,
+        sparse_threshold=0.3 if selected_model != "hist_gradient_boosting" else 0.0,
     )

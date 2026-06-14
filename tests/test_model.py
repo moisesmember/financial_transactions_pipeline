@@ -8,6 +8,8 @@ import pandas as pd
 from src.config.settings import Settings
 from src.models.evaluate import evaluate_binary_classifier
 from src.models.model_factory import ModelFactory
+from src.models.external_benchmarks import ExternalBenchmarkRunner
+from src.models.optuna_search import OptunaModelSelector
 from src.models.threshold import find_best_threshold
 from src.models.threshold_analysis import (
     build_cost_scenario_summary,
@@ -23,6 +25,15 @@ def test_model_factory_creates_supported_model() -> None:
     model = ModelFactory(Settings()).create("logistic_regression")
 
     assert hasattr(model, "fit")
+
+
+def test_model_factory_applies_parameter_overrides() -> None:
+    model = ModelFactory(Settings()).create(
+        "logistic_regression",
+        params={"C": 0.25},
+    )
+
+    assert model.C == 0.25
 
 
 def test_threshold_optimizes_fbeta() -> None:
@@ -113,3 +124,80 @@ def test_training_pipeline_can_fit_small_dataframe() -> None:
 
     assert len(scores) == len(frame)
     assert np.all((scores >= 0.0) & (scores <= 1.0))
+
+
+def test_hist_gradient_boosting_uses_dense_compatible_preprocessing() -> None:
+    settings = Settings(model_name="hist_gradient_boosting")
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=20, freq="D"),
+            "card_id": [index % 4 for index in range(20)],
+            "amount": [float(index) for index in range(20)],
+            "merchant_state": ["SP", "RJ"] * 10,
+        }
+    )
+    target = pd.Series([0, 1] * 10)
+
+    pipeline = FraudModelTrainer(settings).train(frame, target)
+
+    assert len(pipeline.predict_proba(frame)) == len(frame)
+
+
+def test_external_benchmarks_record_unavailable_dependencies(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        project_root=tmp_path,
+        external_benchmark_backends=("autogluon", "h2o", "flaml"),
+    )
+    runner = ExternalBenchmarkRunner(settings)
+    for adapter_type in runner._adapters.values():
+        monkeypatch.setattr(adapter_type, "is_available", lambda self: False)
+
+    summary = runner.run(
+        dataset=None,
+        results_path=tmp_path / "results.csv",
+        summary_path=tmp_path / "summary.json",
+        output_dir=tmp_path / "output",
+    )
+
+    assert {item["backend"] for item in summary} == {"autogluon", "h2o", "flaml"}
+    assert {item["status"] for item in summary} == {"unavailable"}
+
+
+def test_optuna_search_executes_each_supported_model_family(tmp_path) -> None:
+    row_count = 120
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=row_count, freq="h"),
+            "card_id": [index % 8 for index in range(row_count)],
+            "amount": [100.0 if index % 10 == 0 else 10.0 + index % 5 for index in range(row_count)],
+            "merchant_state": ["SP", "RJ", "AM"] * 40,
+        }
+    )
+    target = pd.Series([1 if index % 10 == 0 else 0 for index in range(row_count)])
+    settings = Settings(
+        project_root=tmp_path,
+        optuna_trials=3,
+        optuna_timeout_seconds=60,
+        threshold_analysis_start=0.10,
+        threshold_analysis_stop=0.90,
+        threshold_analysis_step=0.20,
+        categorical_min_frequency=2,
+    )
+
+    result = OptunaModelSelector(settings).select(
+        frame.iloc[:80],
+        target.iloc[:80],
+        frame.iloc[80:],
+        target.iloc[80:],
+        trials_path=tmp_path / "trials.csv",
+        study_path=tmp_path / "study.json",
+    )
+    trials = pd.read_csv(tmp_path / "trials.csv")
+
+    assert set(trials["model_name"]) == {
+        "logistic_regression",
+        "random_forest",
+        "hist_gradient_boosting",
+    }
+    assert set(trials["state"]) == {"COMPLETE"}
+    assert result.model_name in set(trials["model_name"])

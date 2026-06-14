@@ -27,6 +27,8 @@ def write_model_card(
         f"- Dataset version: `{metadata['dataset_version']}`",
         f"- Feature set version: `{metadata['feature_set_version']}`",
         f"- Code version: `{metadata['code_version']}`",
+        f"- Model selection engine: `{metadata.get('model_selection', {}).get('engine', 'fixed')}`",
+        f"- Model selection trials: {metadata.get('model_selection', {}).get('trial_count', 0)}",
         f"- Train rows: {dataset['train_rows']}",
         f"- Validation rows: {dataset['validation_rows']}",
         f"- Test rows: {dataset['test_rows']}",
