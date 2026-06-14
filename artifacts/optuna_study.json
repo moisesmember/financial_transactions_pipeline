@@ -1,0 +1,46 @@
+{
+  "study_name": "fraud_model_selection",
+  "direction": "maximize",
+  "objective": "validation_pr_auc",
+  "sampler": "TPESampler",
+  "seed": 42,
+  "configured_candidates": [
+    "logistic_regression",
+    "random_forest",
+    "hist_gradient_boosting",
+    "lightgbm",
+    "catboost",
+    "xgboost"
+  ],
+  "available_candidates": [
+    "logistic_regression",
+    "random_forest",
+    "hist_gradient_boosting",
+    "lightgbm",
+    "xgboost"
+  ],
+  "unavailable_candidates": [
+    "catboost"
+  ],
+  "best_trial_number": 10,
+  "best_value": 0.5861647807076192,
+  "best_model_name": "xgboost",
+  "best_model_params": {
+    "objective": "binary:logistic",
+    "eval_metric": "aucpr",
+    "tree_method": "hist",
+    "n_jobs": -1,
+    "random_state": 42,
+    "verbosity": 0,
+    "n_estimators": 350,
+    "max_depth": 4,
+    "learning_rate": 0.16328176997790186,
+    "subsample": 0.8361015777940174,
+    "colsample_bytree": 0.8731715765916871,
+    "min_child_weight": 2.9517375842509077,
+    "reg_alpha": 1.3852673067031234e-08,
+    "reg_lambda": 0.028769588911713648,
+    "scale_pos_weight": 669.39
+  },
+  "trial_count": 15
+}

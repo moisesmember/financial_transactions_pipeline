@@ -1,0 +1,132 @@
+[
+  {
+    "backend": "optuna_sklearn",
+    "status": "completed",
+    "framework_model": "xgboost",
+    "selection_engine": "optuna"
+  },
+  {
+    "backend": "autogluon",
+    "status": "completed",
+    "framework_model": "WeightedEnsemble_L2",
+    "duration_seconds": 317.8707601999922,
+    "metadata": {
+      "path": "D:\\developer\\workspace_python\\financial_transactions_pipeline\\artifacts\\external_benchmarks\\20260614T165819291939Z_xgboost_54b26577\\autogluon"
+    }
+  },
+  {
+    "backend": "h2o",
+    "status": "completed",
+    "framework_model": "DRF_1_AutoML_1_20260614_130531",
+    "duration_seconds": 148.53490070000407,
+    "metadata": {
+      "leaderboard": [
+        {
+          "model_id": "DRF_1_AutoML_1_20260614_130531",
+          "aucpr": 0.5672074508588141,
+          "auc": 0.9008773784679128,
+          "logloss": 0.0085971358587519,
+          "mean_per_class_error": 0.2692407289933284,
+          "rmse": 0.0329568254773881,
+          "mse": 0.001086152345547
+        },
+        {
+          "model_id": "GLM_1_AutoML_1_20260614_130531",
+          "aucpr": 0.5359045757731463,
+          "auc": 0.9262774544685624,
+          "logloss": 0.0057741657712358,
+          "mean_per_class_error": 0.2756609451661442,
+          "rmse": 0.030336779520826,
+          "mse": 0.000920320191695208
+        },
+        {
+          "model_id": "GBM_2_AutoML_1_20260614_130531",
+          "aucpr": 0.4038240346869173,
+          "auc": 0.9238794500985252,
+          "logloss": 0.0167835693527045,
+          "mean_per_class_error": 0.2629699092589017,
+          "rmse": 0.0367020464302095,
+          "mse": 0.0013470402121652
+        },
+        {
+          "model_id": "XRT_1_AutoML_1_20260614_130531",
+          "aucpr": 0.3833957768504583,
+          "auc": 0.8961563233255596,
+          "logloss": 0.0130384571421671,
+          "mean_per_class_error": 0.28897944611462,
+          "rmse": 0.0385627861339051,
+          "mse": 0.0014870884744093
+        },
+        {
+          "model_id": "GBM_grid_1_AutoML_1_20260614_130531_model_1",
+          "aucpr": 0.3809319481587524,
+          "auc": 0.8999490775216841,
+          "logloss": 0.0200729944025676,
+          "mean_per_class_error": 0.2566094516614416,
+          "rmse": 0.0348376186396857,
+          "mse": 0.0012136596724841
+        },
+        {
+          "model_id": "GBM_5_AutoML_1_20260614_130531",
+          "aucpr": 0.3715476449430912,
+          "auc": 0.945436334643936,
+          "logloss": 0.0143123467201395,
+          "mean_per_class_error": 0.2566492907116786,
+          "rmse": 0.0353063999582106,
+          "mse": 0.0012465418780091
+        },
+        {
+          "model_id": "GBM_3_AutoML_1_20260614_130531",
+          "aucpr": 0.3525761910892017,
+          "auc": 0.891506901860075,
+          "logloss": 0.0226307386632821,
+          "mean_per_class_error": 0.2630495873593758,
+          "rmse": 0.036996666622626,
+          "mse": 0.0013687533411857
+        },
+        {
+          "model_id": "GBM_1_AutoML_1_20260614_130531",
+          "aucpr": 0.35081661974757,
+          "auc": 0.9558824656081738,
+          "logloss": 0.026281322854326,
+          "mean_per_class_error": 0.2375280788690613,
+          "rmse": 0.0370048820580349,
+          "mse": 0.001369361296129
+        },
+        {
+          "model_id": "GBM_grid_1_AutoML_1_20260614_130531_model_2",
+          "aucpr": 0.1923560588708,
+          "auc": 0.8002384469308098,
+          "logloss": 0.0609072280000566,
+          "mean_per_class_error": 0.2507967810047408,
+          "rmse": 0.0542979195195585,
+          "mse": 0.0029482640641524
+        },
+        {
+          "model_id": "GBM_4_AutoML_1_20260614_130531",
+          "aucpr": 0.1421831246765595,
+          "auc": 0.8760360706846902,
+          "logloss": 0.0434022326392127,
+          "mean_per_class_error": 0.2891388023155681,
+          "rmse": 0.0465593402168231,
+          "mse": 0.0021677721614258
+        }
+      ]
+    }
+  },
+  {
+    "backend": "flaml",
+    "status": "completed",
+    "framework_model": "extra_tree",
+    "duration_seconds": 306.57690650000586,
+    "metadata": {
+      "best_config": {
+        "n_estimators": 237,
+        "max_features": 0.8306148225266421,
+        "max_leaves": 179,
+        "criterion": "gini"
+      },
+      "best_loss": 0.41261345783090475
+    }
+  }
+]

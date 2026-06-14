@@ -1,70 +1,90 @@
 {
-  "artifact_count": 13,
+  "artifact_count": 17,
   "artifacts": [
     {
       "filename": "baseline_decision.json",
-      "sha256": "98deffa2b4a8699e1f22357f4400b8be51294d97e1166a7fcb74e23f9e873a00",
-      "size_bytes": 540
+      "sha256": "04e6e9ddf010ac7073e30366d5f459a6c2f97d6fefc26e7074949dc6298f70d5",
+      "size_bytes": 478
     },
     {
       "filename": "calibration_curve.png",
-      "sha256": "9efcfa89f55441b5ee1dc6326ffae322a41fb9696b5edf9a43b6d2347f290c18",
-      "size_bytes": 45967
+      "sha256": "3c3220bb82a3072ea94f8404f253ceefaf6bd5e65972cd113dcea6e7aa886187",
+      "size_bytes": 44555
     },
     {
       "filename": "calibration_metrics.json",
-      "sha256": "1e0fb6754538b6c90fc27930734eec6b6450414104962416581d78bffb9d646f",
-      "size_bytes": 194
+      "sha256": "7c12675c2f79b651637897672893a95e7ecb30d16d329750dfce4b5fe1120c74",
+      "size_bytes": 199
     },
     {
       "filename": "calibration_report.csv",
-      "sha256": "259401a26a2f537de503eab76fbf8bf362909543b2ee6c604e76b74780addc99",
-      "size_bytes": 1691
+      "sha256": "db6a677564de77c465ca87d57d3b3a94b456b509334f9c3d261180b6611def5c",
+      "size_bytes": 1684
+    },
+    {
+      "filename": "external_benchmark_results.csv",
+      "sha256": "dc8212012cc936d5ffc511e30e33c1da95f0d7393aa4e9ee8bd53cb1e29519ef",
+      "size_bytes": 2587
+    },
+    {
+      "filename": "external_benchmark_summary.json",
+      "sha256": "af6a71036ca9c780dc56c3f369629b76cff3af0ba7364d3e204a2e044b1e6397",
+      "size_bytes": 4422
     },
     {
       "filename": "feature_importance.csv",
-      "sha256": "e5b9ab0ddb2299e1c0dc8df7a3295c7a0583051d469559aa6fc2c7516da53651",
-      "size_bytes": 371554
+      "sha256": "55800a31be3959c9f6eab36a56fb0251de2fd2823039bb02de21a42c28e51ddb",
+      "size_bytes": 178179
     },
     {
       "filename": "fraud_pipeline.joblib",
-      "sha256": "e048a43e64dd886c6e82da28415b307b62d70d51ede2d4d6ba46f6910f9b6a9d",
-      "size_bytes": 8905487
+      "sha256": "44a72225987a7fedd52f6ed8d4ad72d0a462bef6cbc858294022a511d98abce9",
+      "size_bytes": 7126763
     },
     {
       "filename": "leakage_audit.json",
-      "sha256": "7d4b70444bf10d0e713aa9cd8a53ff0537c9ca3091f898660bd66518edf361f9",
-      "size_bytes": 5768
+      "sha256": "4d6a3fb181e8a0ba7c2fad9de881b2ca1477bc5b78340ae96feb7dd0c3f84f76",
+      "size_bytes": 5725
     },
     {
       "filename": "model_card.md",
-      "sha256": "841cf12281fcd240e7eee593aa7dddb36f9467168097a39fd6daf761f7e4eadd",
-      "size_bytes": 1769
+      "sha256": "c89bc672abf1d6df2e7a3e08d72db5d3335afe5bc9cfe84bf2bd940d4fe1de05",
+      "size_bytes": 1694
     },
     {
       "filename": "model_metadata.joblib",
-      "sha256": "e424fca2c3f41238ea490b4c08befcfde85dc5caf3150ca287d6e092c9a08249",
-      "size_bytes": 2471
+      "sha256": "cb153bf220bb4e4aab7bb6aaee29ff17fb14aeda39a8494c72047e7b1403c720",
+      "size_bytes": 4706
+    },
+    {
+      "filename": "optuna_study.json",
+      "sha256": "838a200d1305b7c809add663aca357484854d67e8ddbe210d30eac6a7a983bfb",
+      "size_bytes": 1164
+    },
+    {
+      "filename": "optuna_trials.csv",
+      "sha256": "016fa0dbed5b97f2f7be62ce7866334efd72d26052cd1f4ea5aaf6baec5485ce",
+      "size_bytes": 6870
     },
     {
       "filename": "out_of_time_metrics.json",
-      "sha256": "2311f73a28c622d6730fca2849a3912df9fe7b0602748e18d83fac0b3e54de40",
-      "size_bytes": 355
+      "sha256": "2899990744275b281e41e24dc12292f8bb01edae83e1d82dab5333acafa480d5",
+      "size_bytes": 349
     },
     {
       "filename": "score_deciles.csv",
-      "sha256": "2e9bf9c236e1c535b6b72047cd7f209a0633e8710c8a93c9de7ed74b9770a3d6",
-      "size_bytes": 3273
+      "sha256": "fdcfd99db190694f0a3a7500e570f9a6530539ce43b19dd6499de518e11d07b6",
+      "size_bytes": 3278
     },
     {
       "filename": "threshold_analysis.csv",
-      "sha256": "ed5cbf85466e84f0bff1da31079aae385467e0f9194859ca1df8944be4b3bf13",
-      "size_bytes": 42349
+      "sha256": "e528006cfba102f941a2b9d5dd87a4c6f96f912310c8d0a67b12a77c29d09b14",
+      "size_bytes": 35906
     },
     {
       "filename": "threshold_cost_scenarios.csv",
-      "sha256": "f9ae68694fe006ee8508d2327a99ce604a121923a72cb576c2c11d811a592c7b",
-      "size_bytes": 2407
+      "sha256": "bee0c9bc441fc99dd26900feb15c0dbc13f846d1e9a72cff1dcc49a1a461a59c",
+      "size_bytes": 2181
     }
   ]
 }

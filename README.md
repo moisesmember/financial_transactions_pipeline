@@ -365,20 +365,29 @@ da grade bloqueia a promoção automática.
 ### Seleção de modelo com Optuna
 
 Por padrão, Optuna compara `logistic_regression`, `random_forest` e
-`hist_gradient_boosting`. O objetivo é maximizar PR-AUC na validação temporal.
+`hist_gradient_boosting`. Também há suporte opcional a `xgboost`, `lightgbm`
+e `catboost`. Instale esses modelos antes de incluí-los na busca:
+
+```bash
+pip install -r requirements-models.txt
+```
+
+O objetivo é maximizar PR-AUC na validação temporal.
 Cada trial também registra precision, recall, alert rate, custo e o threshold
 de menor custo. Teste e OOT nunca participam da busca.
 
 ```bash
 MODEL_SELECTION_ENGINE=optuna
-OPTUNA_MODEL_CANDIDATES=logistic_regression,random_forest,hist_gradient_boosting
+OPTUNA_MODEL_CANDIDATES=logistic_regression,random_forest,hist_gradient_boosting,lightgbm,catboost,xgboost
 OPTUNA_TRIALS=15
 OPTUNA_TIMEOUT_SECONDS=900
 OPTUNA_N_JOBS=1
 ```
 
-Use `OPTUNA_N_JOBS=1` para maior reprodutibilidade e controle de memória. Para
-treinar somente o modelo configurado:
+Use `OPTUNA_N_JOBS=1` para maior reprodutibilidade e controle de memória. Uma
+dependência opcional ausente faz somente aquele candidato ser ignorado, com um
+aviso nos logs e registro no resumo do estudo. Para treinar somente o modelo
+configurado:
 
 ```bash
 MODEL_SELECTION_ENGINE=fixed

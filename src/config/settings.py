@@ -436,4 +436,28 @@ class Settings:
                 "class_weight": "balanced",
                 "random_state": self.random_state,
             },
+            "xgboost": {
+                "objective": "binary:logistic",
+                "eval_metric": "aucpr",
+                "tree_method": "hist",
+                "n_jobs": -1,
+                "random_state": self.random_state,
+                "verbosity": 0,
+            },
+            "lightgbm": {
+                "objective": "binary",
+                "class_weight": "balanced",
+                "n_jobs": -1,
+                "random_state": self.random_state,
+                "verbosity": -1,
+            },
+            "catboost": {
+                "loss_function": "Logloss",
+                "eval_metric": "PRAUC",
+                "auto_class_weights": "Balanced",
+                "allow_writing_files": False,
+                "verbose": False,
+                "random_seed": self.random_state,
+                "thread_count": -1,
+            },
         }

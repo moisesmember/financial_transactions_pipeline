@@ -36,6 +36,23 @@ def test_model_factory_applies_parameter_overrides() -> None:
     assert model.C == 0.25
 
 
+def test_settings_accept_optional_optuna_models() -> None:
+    settings = Settings(
+        optuna_model_candidates=("xgboost", "lightgbm", "catboost"),
+    )
+
+    assert set(settings.optuna_model_candidates) == {"xgboost", "lightgbm", "catboost"}
+
+
+def test_model_factory_reports_unavailable_optional_models(monkeypatch) -> None:
+    strategy = ModelFactory._strategies["catboost"]
+    monkeypatch.setattr(strategy, "is_available", lambda: False)
+
+    assert ModelFactory.unavailable_model_names(("logistic_regression", "catboost")) == (
+        "catboost",
+    )
+
+
 def test_threshold_optimizes_fbeta() -> None:
     """Threshold tuning should return a valid threshold and metrics."""
     y_true = np.array([0, 0, 1, 1])
@@ -176,6 +193,11 @@ def test_optuna_search_executes_each_supported_model_family(tmp_path) -> None:
     target = pd.Series([1 if index % 10 == 0 else 0 for index in range(row_count)])
     settings = Settings(
         project_root=tmp_path,
+        optuna_model_candidates=(
+            "logistic_regression",
+            "random_forest",
+            "hist_gradient_boosting",
+        ),
         optuna_trials=3,
         optuna_timeout_seconds=60,
         threshold_analysis_start=0.10,

@@ -12,6 +12,7 @@ import pandas as pd
 from sklearn.metrics import average_precision_score
 
 from src.config.settings import Settings
+from src.models.model_factory import ModelFactory
 from src.models.threshold_analysis import build_threshold_table, select_business_threshold, threshold_grid
 from src.models.train import FraudModelTrainer
 from src.utils.logger import get_logger
@@ -54,6 +55,22 @@ class OptunaModelSelector:
                 "Optuna nao esta instalado. Execute `pip install -r requirements.txt`."
             ) from exc
 
+        configured_candidates = self.settings.optuna_model_candidates
+        available_candidates = ModelFactory.available_model_names(configured_candidates)
+        unavailable_candidates = ModelFactory.unavailable_model_names(configured_candidates)
+        if unavailable_candidates:
+            logger.warning(
+                "Modelos Optuna ignorados por dependencia ausente: %s. "
+                "Instale com `pip install -r requirements-models.txt`.",
+                ", ".join(unavailable_candidates),
+            )
+        if not available_candidates:
+            raise RuntimeError(
+                "Nenhum candidato Optuna possui as dependencias instaladas. "
+                "Execute `pip install -r requirements-models.txt` ou configure "
+                "um modelo nativo do scikit-learn."
+            )
+
         thresholds = threshold_grid(
             self.settings.threshold_analysis_start,
             self.settings.threshold_analysis_stop,
@@ -65,15 +82,19 @@ class OptunaModelSelector:
             sampler=sampler,
             study_name="fraud_model_selection",
         )
-        for model_name in self.settings.optuna_model_candidates:
+        for model_name in available_candidates:
             study.enqueue_trial({"model_name": model_name})
 
         def objective(trial) -> float:
             model_name = trial.suggest_categorical(
                 "model_name",
-                list(self.settings.optuna_model_candidates),
+                list(available_candidates),
             )
-            params = self._suggest_params(trial, model_name)
+            params = self._suggest_params(
+                trial,
+                model_name,
+                positive_class_weight=self._positive_class_weight(y_train),
+            )
             pipeline = FraudModelTrainer(self.settings).train(
                 X_train,
                 y_train,
@@ -116,10 +137,10 @@ class OptunaModelSelector:
 
         study.optimize(
             objective,
-            n_trials=max(self.settings.optuna_trials, len(self.settings.optuna_model_candidates)),
+            n_trials=max(self.settings.optuna_trials, len(available_candidates)),
             timeout=self.settings.optuna_timeout_seconds,
             n_jobs=self.settings.optuna_n_jobs,
-            catch=(ValueError, MemoryError),
+            catch=(ImportError, RuntimeError, ValueError, MemoryError),
         )
         if study.best_trial.value is None:
             raise RuntimeError("Optuna nao concluiu nenhum trial valido.")
@@ -145,6 +166,9 @@ class OptunaModelSelector:
                     "objective": "validation_pr_auc",
                     "sampler": "TPESampler",
                     "seed": self.settings.random_state,
+                    "configured_candidates": list(configured_candidates),
+                    "available_candidates": list(available_candidates),
+                    "unavailable_candidates": list(unavailable_candidates),
                     "best_trial_number": study.best_trial.number,
                     "best_value": float(study.best_value),
                     "best_model_name": best_model_name,
@@ -164,7 +188,12 @@ class OptunaModelSelector:
             trial_count=len(study.trials),
         )
 
-    def _suggest_params(self, trial, model_name: str) -> dict[str, Any]:
+    def _suggest_params(
+        self,
+        trial,
+        model_name: str,
+        positive_class_weight: float = 1.0,
+    ) -> dict[str, Any]:
         if model_name == "logistic_regression":
             return {
                 "C": trial.suggest_float("logistic_regression__C", 1e-3, 100.0, log=True),
@@ -224,7 +253,135 @@ class OptunaModelSelector:
                     log=True,
                 ),
             }
+        if model_name == "xgboost":
+            return {
+                "n_estimators": trial.suggest_int(
+                    "xgboost__n_estimators",
+                    150,
+                    500,
+                    step=50,
+                ),
+                "max_depth": trial.suggest_int("xgboost__max_depth", 3, 10),
+                "learning_rate": trial.suggest_float(
+                    "xgboost__learning_rate",
+                    0.01,
+                    0.20,
+                    log=True,
+                ),
+                "subsample": trial.suggest_float("xgboost__subsample", 0.60, 1.0),
+                "colsample_bytree": trial.suggest_float(
+                    "xgboost__colsample_bytree",
+                    0.60,
+                    1.0,
+                ),
+                "min_child_weight": trial.suggest_float(
+                    "xgboost__min_child_weight",
+                    1.0,
+                    20.0,
+                    log=True,
+                ),
+                "reg_alpha": trial.suggest_float(
+                    "xgboost__reg_alpha",
+                    1e-8,
+                    10.0,
+                    log=True,
+                ),
+                "reg_lambda": trial.suggest_float(
+                    "xgboost__reg_lambda",
+                    1e-3,
+                    20.0,
+                    log=True,
+                ),
+                "scale_pos_weight": trial.suggest_categorical(
+                    "xgboost__scale_pos_weight",
+                    sorted({1.0, float(np.sqrt(positive_class_weight)), positive_class_weight}),
+                ),
+            }
+        if model_name == "lightgbm":
+            return {
+                "n_estimators": trial.suggest_int(
+                    "lightgbm__n_estimators",
+                    150,
+                    500,
+                    step=50,
+                ),
+                "num_leaves": trial.suggest_int("lightgbm__num_leaves", 15, 127),
+                "max_depth": trial.suggest_int("lightgbm__max_depth", 4, 12),
+                "learning_rate": trial.suggest_float(
+                    "lightgbm__learning_rate",
+                    0.01,
+                    0.20,
+                    log=True,
+                ),
+                "min_child_samples": trial.suggest_int(
+                    "lightgbm__min_child_samples",
+                    10,
+                    100,
+                ),
+                "subsample": trial.suggest_float("lightgbm__subsample", 0.60, 1.0),
+                "subsample_freq": 1,
+                "colsample_bytree": trial.suggest_float(
+                    "lightgbm__colsample_bytree",
+                    0.60,
+                    1.0,
+                ),
+                "reg_alpha": trial.suggest_float(
+                    "lightgbm__reg_alpha",
+                    1e-8,
+                    10.0,
+                    log=True,
+                ),
+                "reg_lambda": trial.suggest_float(
+                    "lightgbm__reg_lambda",
+                    1e-3,
+                    20.0,
+                    log=True,
+                ),
+            }
+        if model_name == "catboost":
+            return {
+                "iterations": trial.suggest_int(
+                    "catboost__iterations",
+                    150,
+                    500,
+                    step=50,
+                ),
+                "depth": trial.suggest_int("catboost__depth", 4, 10),
+                "learning_rate": trial.suggest_float(
+                    "catboost__learning_rate",
+                    0.01,
+                    0.20,
+                    log=True,
+                ),
+                "l2_leaf_reg": trial.suggest_float(
+                    "catboost__l2_leaf_reg",
+                    0.1,
+                    20.0,
+                    log=True,
+                ),
+                "random_strength": trial.suggest_float(
+                    "catboost__random_strength",
+                    1e-3,
+                    10.0,
+                    log=True,
+                ),
+                "border_count": trial.suggest_int(
+                    "catboost__border_count",
+                    32,
+                    128,
+                    step=16,
+                ),
+            }
         raise ValueError(f"Modelo Optuna nao suportado: {model_name}")
+
+    @staticmethod
+    def _positive_class_weight(target: pd.Series) -> float:
+        """Return the negative-to-positive ratio used by XGBoost candidates."""
+        positive_count = int((target == 1).sum())
+        negative_count = int((target == 0).sum())
+        if positive_count == 0:
+            return 1.0
+        return max(1.0, negative_count / positive_count)
 
     @staticmethod
     def _extract_model_params(
