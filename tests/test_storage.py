@@ -95,6 +95,54 @@ def test_minio_only_uploads_complete_artifact_tree_before_cleanup(tmp_path) -> N
     assert store.objects["artifacts/external_benchmarks/run-1/model.bin"] == b"model"
 
 
+def test_minio_uploads_only_current_run_artifacts_when_history_dir_is_provided(tmp_path) -> None:
+    artifacts_dir = tmp_path / "artifacts"
+    current_history_file = artifacts_dir / "history" / "run-2" / "metadata.json"
+    old_history_file = artifacts_dir / "history" / "run-1" / "metadata.json"
+    history_index = artifacts_dir / "history" / "runs.csv"
+    current_benchmark = artifacts_dir / "external_benchmarks" / "run-2" / "model.bin"
+    old_benchmark = artifacts_dir / "external_benchmarks" / "run-1" / "model.bin"
+    top_level_artifact = artifacts_dir / "model_metadata.joblib"
+    for path in [
+        current_history_file,
+        old_history_file,
+        history_index,
+        current_benchmark,
+        old_benchmark,
+        top_level_artifact,
+    ]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    current_history_file.write_text('{"run_id": "run-2"}', encoding="utf-8")
+    old_history_file.write_text('{"run_id": "run-1"}', encoding="utf-8")
+    history_index.write_text("run_id\nrun-2\nrun-1\n", encoding="utf-8")
+    current_benchmark.write_bytes(b"current-model")
+    old_benchmark.write_bytes(b"old-model")
+    top_level_artifact.write_bytes(b"metadata")
+    settings = Settings(
+        project_root=tmp_path,
+        storage_backend="minio",
+        keep_local_artifacts=False,
+        keep_local_raw_data=False,
+    )
+    store = MemoryObjectStore()
+    store.objects["artifacts/history/run-1/metadata.json"] = b'{"run_id": "run-1"}'
+    store.objects["artifacts/external_benchmarks/run-1/model.bin"] = b"old-model"
+    sync = StorageSyncService(settings, object_store=store)
+
+    uploaded = sync.upload_artifacts(history_run_dir=current_history_file.parent)
+    sync.purge_local_artifacts(uploaded)
+
+    assert set(uploaded) == {
+        "artifacts/model_metadata.joblib",
+        "artifacts/history/runs.csv",
+        "artifacts/history/run-2/metadata.json",
+        "artifacts/external_benchmarks/run-2/model.bin",
+    }
+    assert "artifacts/external_benchmarks/run-1/model.bin" not in uploaded
+    assert not artifacts_dir.exists()
+    assert store.objects["artifacts/external_benchmarks/run-2/model.bin"] == b"current-model"
+
+
 def test_local_backend_rejects_remote_only_retention(tmp_path) -> None:
     try:
         Settings(

@@ -48,11 +48,10 @@ class StorageSyncService:
         return uploaded
 
     def upload_artifacts(self, history_run_dir: Path | None = None) -> list[str]:
-        """Upload the complete local artifact workspace to the object store."""
+        """Upload current-run artifacts to the object store."""
         if self.settings.storage_backend == "local":
             logger.info("STORAGE_BACKEND=local; upload de artefatos ignorado.")
             return []
-        del history_run_dir
         if not self.settings.artifacts_dir.exists():
             return []
 
@@ -63,8 +62,7 @@ class StorageSyncService:
                     path.relative_to(self.settings.artifacts_dir).as_posix()
                 ),
             )
-            for path in self.settings.artifacts_dir.rglob("*")
-            if path.is_file()
+            for path in self._artifact_upload_candidates(history_run_dir)
         ]
         uploaded: list[str] = []
         for local_path, key in artifacts:
@@ -96,8 +94,12 @@ class StorageSyncService:
             )
             for path in local_files
         }
-        if uploaded is not None and not expected.issubset(set(uploaded)):
-            raise RuntimeError("Limpeza local bloqueada: nem todos os artefatos foram enviados.")
+        if uploaded is not None:
+            missing_uploaded = [key for key in uploaded if not self.object_store.exists(key)]
+            if missing_uploaded:
+                raise RuntimeError(
+                    "Limpeza local bloqueada: nem todos os artefatos enviados foram confirmados."
+                )
         self._verify_uploaded(sorted(expected))
         self._remove_managed_directory(self.settings.artifacts_dir)
         logger.info("Artefatos locais removidos apos persistencia confirmada no MinIO.")
@@ -155,6 +157,40 @@ class StorageSyncService:
             raise RuntimeError(
                 "Objetos nao confirmados no storage: " + ", ".join(missing[:10])
             )
+
+    def _artifact_upload_candidates(self, history_run_dir: Path | None) -> list[Path]:
+        if history_run_dir is None:
+            return sorted(
+                (path for path in self.settings.artifacts_dir.rglob("*") if path.is_file()),
+                key=lambda path: path.as_posix(),
+            )
+
+        artifacts_dir = self.settings.artifacts_dir.resolve()
+        run_dir = history_run_dir.resolve()
+        if artifacts_dir != run_dir and artifacts_dir not in run_dir.parents:
+            raise RuntimeError(f"Historico fora do diretorio de artefatos: {history_run_dir}")
+
+        candidates: set[Path] = {
+            path for path in self.settings.artifacts_dir.iterdir() if path.is_file()
+        }
+        candidates.update(self._files_under(history_run_dir))
+        candidates.update(self._files_under(self.settings.baseline_dir))
+        candidates.update(
+            self._files_under(self.settings.artifacts_dir / "external_benchmarks" / run_dir.name)
+        )
+        if self.settings.training_history_index_path.exists():
+            candidates.add(self.settings.training_history_index_path)
+
+        return sorted(candidates, key=lambda path: path.as_posix())
+
+    @staticmethod
+    def _files_under(directory: Path) -> list[Path]:
+        if not directory.exists():
+            return []
+        return sorted(
+            (path for path in directory.rglob("*") if path.is_file()),
+            key=lambda path: path.as_posix(),
+        )
 
     def _remove_managed_directory(self, directory: Path) -> None:
         root = self.settings.project_root.resolve()

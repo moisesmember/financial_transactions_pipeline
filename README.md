@@ -191,7 +191,7 @@ no mesmo banco.
 Instale as dependências e suba o PostgreSQL:
 
 ```bash
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 docker compose up -d postgres
 ```
 
@@ -314,19 +314,34 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-Instale as dependências e execute o projeto:
+Instale as dependências em ordem. Primeiro instale ou atualize a base do
+projeto; esse arquivo contém os limites de versão compatíveis com o pipeline e
+com os benchmarks:
 
 ```bash
-pip install -r requirements.txt
+pip install -U -r requirements.txt
+```
+
+Depois, instale os modelos opcionais usados pelo Optuna (`xgboost`, `lightgbm`
+e `catboost`) quando quiser incluí-los na busca:
+
+```bash
+pip install -r requirements-models.txt
+```
+
+Por fim, instale os benchmarks externos (`AutoGluon`, `H2O` e `FLAML`). Deixe
+esta etapa por último porque esses pacotes têm restrições próprias de versões:
+
+```bash
+pip install -U -r requirements-benchmarks.txt
+```
+
+Execute o projeto:
+
+```bash
 python main.py
 pytest
 uvicorn src.api.app:app --reload
-```
-
-Para instalar também os benchmarks externos:
-
-```bash
-pip install -r requirements-benchmarks.txt
 ```
 
 AutoGluon e H2O são recomendados em Linux/WSL; H2O também requer uma JVM
@@ -389,11 +404,8 @@ da grade bloqueia a promoção automática.
 
 Por padrão, Optuna compara `logistic_regression`, `random_forest` e
 `hist_gradient_boosting`. Também há suporte opcional a `xgboost`, `lightgbm`
-e `catboost`. Instale esses modelos antes de incluí-los na busca:
-
-```bash
-pip install -r requirements-models.txt
-```
+e `catboost`. Instale `requirements-models.txt`, conforme a sequência da seção
+`Como executar`, antes de incluí-los na busca.
 
 O objetivo é maximizar PR-AUC na validação temporal.
 Cada trial também registra precision, recall, alert rate, custo e o threshold
@@ -512,7 +524,7 @@ dessas features no momento real da predição.
 Com o ambiente virtual ativado, instale as dependências do projeto:
 
 ```bash
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 ```
 
 Inicie o JupyterLab na raiz do projeto:
