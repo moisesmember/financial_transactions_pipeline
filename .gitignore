@@ -164,6 +164,7 @@ data/raw/
 # Model artifacts are persisted in MinIO.
 artifacts/
 .runtime/
+mlruns/
 
 # Spyder project settings
 .spyderproject

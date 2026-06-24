@@ -149,10 +149,63 @@ Os objetos ficam organizados pelos prefixos:
 Quando `KEEP_LOCAL_ARTIFACTS=false`, a API baixa o pipeline e os metadados,
 carrega-os em memória e remove imediatamente as cópias locais.
 
+## MLflow
+
+O projeto pode registrar cada treinamento governado no MLflow, mantendo o
+historico proprio em `artifacts/history` e, quando habilitado, tambem o schema
+analitico `fraud_tracking` no PostgreSQL. A integracao e nao bloqueante: se o
+servidor MLflow estiver indisponivel, o treino continua e os artefatos locais
+sao preservados.
+
+Variaveis principais:
+
+```bash
+MLFLOW_TRACKING_ENABLED=true
+MLFLOW_TRACKING_URI=http://localhost:5000
+MLFLOW_EXPERIMENT_NAME=fraud-detection
+MLFLOW_ARTIFACT_LOCATION=
+MLFLOW_ARTIFACT_ROOT=s3://fraud-detection/mlflow
+MLFLOW_LOG_MODEL=true
+MLFLOW_REGISTER_MODEL=false
+MLFLOW_REGISTERED_MODEL_NAME=fraud-detection-model
+```
+
+Suba o tracking server local com PostgreSQL como backend store e MinIO como
+artifact store:
+
+```bash
+docker compose up -d postgres minio mlflow
+```
+
+UI do MLflow:
+
+```text
+http://localhost:5000
+```
+
+No Compose, `MLFLOW_ARTIFACT_ROOT=s3://fraud-detection/mlflow` fica no servidor
+MLflow. Deixe `MLFLOW_ARTIFACT_LOCATION` vazio no cliente para usar o proxy de
+artefatos do tracking server.
+
+Ao final do treino, o MLflow recebe:
+
+- parametros do modelo, selecao, threshold e versoes;
+- metricas de validacao, teste, out-of-time, custos e volumes dos splits;
+- tags com `run_id`, status, auditoria e decisao de baseline;
+- todos os artefatos governados em `governance/`;
+- opcionalmente o modelo sklearn em formato MLflow em `model/`.
+
+Para usar apenas os artefatos/historico locais, configure:
+
+```bash
+MLFLOW_TRACKING_ENABLED=false
+```
+
 ## PostgreSQL
 
 O Docker Compose inclui um PostgreSQL preparado para armazenar futuramente os
-metadados de experimentos do MLflow. Configure no `.env`:
+metadados estruturados do projeto e o backend store do MLflow. Configure no
+`.env`:
 
 ```bash
 POSTGRES_DB=mlflow

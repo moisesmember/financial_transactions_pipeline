@@ -69,6 +69,13 @@ class TrainingRequest(BaseModel):
     baseline_overwrite: bool | None = None
     run_geo_ablation: bool | None = None
     training_history_save_pipeline: bool | None = None
+    mlflow_tracking_enabled: bool | None = None
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment_name: str | None = None
+    mlflow_artifact_location: str | None = None
+    mlflow_log_model: bool | None = None
+    mlflow_register_model: bool | None = None
+    mlflow_registered_model_name: str | None = None
     training_max_rows: int | None = Field(default=None, ge=0)
     baseline_warning_justification: str | None = None
     promotion_min_recall: float | None = Field(default=None, ge=0.0, le=1.0)

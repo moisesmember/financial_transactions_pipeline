@@ -25,6 +25,7 @@ from src.models.external_benchmarks import ExternalBenchmarkRunner
 from src.models.feature_report import build_feature_importance
 from src.models.governance_artifacts import write_manifest, write_model_card
 from src.models.leakage_audit import LeakageAuditService
+from src.models.mlflow_tracking import MlflowTrackingService
 from src.models.optuna_search import OptunaModelSelector
 from src.models.robustness import run_geographic_ablation
 from src.models.threshold import find_best_threshold
@@ -59,6 +60,7 @@ class TrainingResult:
     threshold_analysis_path: Path
     leakage_report_path: Path
     run_id: str
+    mlflow_run_id: str | None
     history_run_dir: Path
     baseline_decision: str
 
@@ -481,6 +483,13 @@ class TrainingPipeline:
             started_at=started_at,
             completed_at=completed_at,
         )
+        mlflow_run_id = MlflowTrackingService(self.settings).log_completed_run(
+            history_run_dir,
+            metadata,
+            leakage_report,
+            input_example=X_val.head(min(5, len(X_val))),
+            prediction_example=validation_scores[: min(5, len(validation_scores))],
+        )
         logger.info("Pipeline e metadados salvos em %s", self.settings.artifacts_dir)
         baseline_registry: BaselineRegistry | None = None
         if self.settings.promote_baseline and baseline_decision["decision"] == "promote":
@@ -526,6 +535,7 @@ class TrainingPipeline:
             threshold_analysis_path=self.settings.threshold_analysis_path,
             leakage_report_path=self.settings.leakage_report_path,
             run_id=run_id,
+            mlflow_run_id=mlflow_run_id,
             history_run_dir=history_run_dir,
             baseline_decision=baseline_decision["decision"],
         )

@@ -197,6 +197,23 @@ class Settings:
     training_history_save_pipeline: bool = field(
         default_factory=lambda: _env_bool("TRAINING_HISTORY_SAVE_PIPELINE", True)
     )
+    mlflow_tracking_enabled: bool = field(
+        default_factory=lambda: _env_bool("MLFLOW_TRACKING_ENABLED", False)
+    )
+    mlflow_tracking_uri: str | None = field(default_factory=lambda: os.getenv("MLFLOW_TRACKING_URI"))
+    mlflow_experiment_name: str = field(
+        default_factory=lambda: os.getenv("MLFLOW_EXPERIMENT_NAME", "fraud-detection")
+    )
+    mlflow_artifact_location: str | None = field(
+        default_factory=lambda: os.getenv("MLFLOW_ARTIFACT_LOCATION")
+    )
+    mlflow_log_model: bool = field(default_factory=lambda: _env_bool("MLFLOW_LOG_MODEL", True))
+    mlflow_register_model: bool = field(
+        default_factory=lambda: _env_bool("MLFLOW_REGISTER_MODEL", False)
+    )
+    mlflow_registered_model_name: str = field(
+        default_factory=lambda: os.getenv("MLFLOW_REGISTERED_MODEL_NAME", "fraud-detection-model")
+    )
     database_tracking_enabled: bool = field(
         default_factory=lambda: _env_bool("DATABASE_TRACKING_ENABLED", True)
     )
@@ -281,6 +298,30 @@ class Settings:
             "model_selection_engine",
             self.model_selection_engine.strip().lower(),
         )
+        if self.mlflow_tracking_uri is None or not self.mlflow_tracking_uri.strip():
+            object.__setattr__(
+                self,
+                "mlflow_tracking_uri",
+                (self.project_root / "mlruns").resolve().as_uri(),
+            )
+        else:
+            object.__setattr__(self, "mlflow_tracking_uri", self.mlflow_tracking_uri.strip())
+        object.__setattr__(
+            self,
+            "mlflow_experiment_name",
+            self.mlflow_experiment_name.strip(),
+        )
+        if self.mlflow_artifact_location is not None:
+            object.__setattr__(
+                self,
+                "mlflow_artifact_location",
+                self.mlflow_artifact_location.strip() or None,
+            )
+        object.__setattr__(
+            self,
+            "mlflow_registered_model_name",
+            self.mlflow_registered_model_name.strip(),
+        )
         if self.model_selection_engine not in {"fixed", "optuna"}:
             raise ValueError("MODEL_SELECTION_ENGINE deve ser 'fixed' ou 'optuna'.")
         if self.storage_backend not in {"local", "minio"}:
@@ -310,6 +351,12 @@ class Settings:
             raise ValueError("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS deve ser positivo.")
         if self.external_benchmark_max_models < 1:
             raise ValueError("EXTERNAL_BENCHMARK_MAX_MODELS deve ser positivo.")
+        if self.mlflow_tracking_enabled and not self.mlflow_experiment_name:
+            raise ValueError("MLFLOW_EXPERIMENT_NAME nao pode ser vazio.")
+        if self.mlflow_register_model and not self.mlflow_log_model:
+            raise ValueError("MLFLOW_REGISTER_MODEL exige MLFLOW_LOG_MODEL=true.")
+        if self.mlflow_register_model and not self.mlflow_registered_model_name:
+            raise ValueError("MLFLOW_REGISTERED_MODEL_NAME nao pode ser vazio.")
         supported_benchmarks = {"autogluon", "h2o", "flaml"}
         unknown_benchmarks = set(self.external_benchmark_backends) - supported_benchmarks
         if unknown_benchmarks:

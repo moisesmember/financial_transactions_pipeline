@@ -18,6 +18,8 @@ def main() -> None:
     logger.info("Metricas de teste: %s", result.test_metrics)
     logger.info("Metricas out-of-time: %s", result.out_of_time_metrics)
     logger.info("Decisao de baseline: %s", result.baseline_decision)
+    if result.mlflow_run_id is not None:
+        logger.info("Run MLflow: %s", result.mlflow_run_id)
     if settings.storage_backend == "minio":
         logger.info("Pipeline salva em: %s", settings.object_uri(settings.pipeline_object_key))
         logger.info(
