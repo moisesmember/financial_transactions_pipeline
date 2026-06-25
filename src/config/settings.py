@@ -25,6 +25,15 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _env_bool_alias(name: str, legacy_name: str, default: bool = False) -> bool:
+    """Parse a boolean environment variable with a backward-compatible alias."""
+    if os.getenv(name) is not None:
+        return _env_bool(name, default)
+    if os.getenv(legacy_name) is not None:
+        return _env_bool(legacy_name, default)
+    return default
+
+
 def _env_optional_positive_int(name: str, default: int | None = None) -> int | None:
     """Parse a positive integer, treating empty or zero as unlimited."""
     value = os.getenv(name)
@@ -91,7 +100,20 @@ class Settings:
     )
     optuna_n_jobs: int = field(default_factory=lambda: int(os.getenv("OPTUNA_N_JOBS", "1")))
     external_benchmarks_enabled: bool = field(
-        default_factory=lambda: _env_bool("EXTERNAL_BENCHMARKS_ENABLED", True)
+        default_factory=lambda: _env_bool_alias(
+            "RUN_EXTERNAL_BENCHMARKS",
+            "EXTERNAL_BENCHMARKS_ENABLED",
+            False,
+        )
+    )
+    run_autogluon_benchmark: bool = field(
+        default_factory=lambda: _env_bool("RUN_AUTOGLUON_BENCHMARK", True)
+    )
+    run_h2o_benchmark: bool = field(
+        default_factory=lambda: _env_bool("RUN_H2O_BENCHMARK", True)
+    )
+    run_flaml_benchmark: bool = field(
+        default_factory=lambda: _env_bool("RUN_FLAML_BENCHMARK", True)
     )
     external_benchmark_backends: tuple[str, ...] = field(
         default_factory=lambda: _env_csv(
@@ -165,6 +187,8 @@ class Settings:
     )
     code_version_override: str | None = field(default_factory=lambda: os.getenv("CODE_VERSION"))
     run_geo_ablation: bool = field(default_factory=lambda: _env_bool("RUN_GEO_ABLATION", False))
+    walk_forward_enabled: bool = field(default_factory=lambda: _env_bool("WALK_FORWARD_ENABLED", False))
+    walk_forward_folds: int = field(default_factory=lambda: int(os.getenv("WALK_FORWARD_FOLDS", "4")))
     feature_exclusions: tuple[str, ...] = ()
     categorical_min_frequency: int = field(
         default_factory=lambda: int(os.getenv("CATEGORICAL_MIN_FREQUENCY", "10"))
@@ -188,6 +212,22 @@ class Settings:
     baseline_decision_filename: str = "baseline_decision.json"
     manifest_filename: str = "manifest.json"
     geo_ablation_filename: str = "geo_ablation_results.csv"
+    robustness_report_filename: str = "robustness_report.json"
+    robustness_markdown_filename: str = "robustness_report.md"
+    geo_ablation_report_filename: str = "geo_ablation_report.json"
+    geo_ablation_markdown_filename: str = "geo_ablation_report.md"
+    target_audit_filename: str = "target_audit.json"
+    target_audit_markdown_filename: str = "target_audit.md"
+    target_audit_by_split_filename: str = "target_audit_by_split.csv"
+    target_audit_by_period_filename: str = "target_audit_by_period.csv"
+    data_drift_report_filename: str = "data_drift_report.json"
+    data_drift_markdown_filename: str = "data_drift_report.md"
+    data_drift_numeric_filename: str = "data_drift_numeric.csv"
+    data_drift_categorical_filename: str = "data_drift_categorical.csv"
+    walk_forward_report_filename: str = "walk_forward_report.json"
+    walk_forward_markdown_filename: str = "walk_forward_report.md"
+    model_review_report_filename: str = "model_review_report.md"
+    threshold_recommendations_filename: str = "threshold_recommendations.json"
     optuna_trials_filename: str = "optuna_trials.csv"
     optuna_study_filename: str = "optuna_study.json"
     external_benchmark_filename: str = "external_benchmark_results.csv"
@@ -298,6 +338,11 @@ class Settings:
             "model_selection_engine",
             self.model_selection_engine.strip().lower(),
         )
+        object.__setattr__(
+            self,
+            "external_benchmark_backends",
+            tuple(backend.strip().lower() for backend in self.external_benchmark_backends),
+        )
         if self.mlflow_tracking_uri is None or not self.mlflow_tracking_uri.strip():
             object.__setattr__(
                 self,
@@ -351,6 +396,8 @@ class Settings:
             raise ValueError("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS deve ser positivo.")
         if self.external_benchmark_max_models < 1:
             raise ValueError("EXTERNAL_BENCHMARK_MAX_MODELS deve ser positivo.")
+        if self.walk_forward_folds < 2:
+            raise ValueError("WALK_FORWARD_FOLDS deve ser pelo menos 2.")
         if self.mlflow_tracking_enabled and not self.mlflow_experiment_name:
             raise ValueError("MLFLOW_EXPERIMENT_NAME nao pode ser vazio.")
         if self.mlflow_register_model and not self.mlflow_log_model:
@@ -391,6 +438,25 @@ class Settings:
         if self.promotion_max_cost_increase < 0:
             raise ValueError("PROMOTION_MAX_COST_INCREASE nao pode ser negativo.")
         object.__setattr__(self, "threshold_selection_strategy", strategy)
+
+    @property
+    def external_benchmark_backend_flags(self) -> dict[str, bool]:
+        """Return per-backend switches for optional external benchmarks."""
+        return {
+            "autogluon": self.run_autogluon_benchmark,
+            "h2o": self.run_h2o_benchmark,
+            "flaml": self.run_flaml_benchmark,
+        }
+
+    @property
+    def enabled_external_benchmark_backends(self) -> tuple[str, ...]:
+        """Backends selected by the legacy list and the per-backend run flags."""
+        flags = self.external_benchmark_backend_flags
+        return tuple(
+            backend
+            for backend in self.external_benchmark_backends
+            if flags.get(backend, False)
+        )
 
     @property
     def pipeline_path(self) -> Path:
@@ -435,6 +501,22 @@ class Settings:
             self.baseline_decision_filename,
             self.manifest_filename,
             self.geo_ablation_filename,
+            self.robustness_report_filename,
+            self.robustness_markdown_filename,
+            self.geo_ablation_report_filename,
+            self.geo_ablation_markdown_filename,
+            self.target_audit_filename,
+            self.target_audit_markdown_filename,
+            self.target_audit_by_split_filename,
+            self.target_audit_by_period_filename,
+            self.data_drift_report_filename,
+            self.data_drift_markdown_filename,
+            self.data_drift_numeric_filename,
+            self.data_drift_categorical_filename,
+            self.walk_forward_report_filename,
+            self.walk_forward_markdown_filename,
+            self.model_review_report_filename,
+            self.threshold_recommendations_filename,
             self.optuna_trials_filename,
             self.optuna_study_filename,
             self.external_benchmark_filename,

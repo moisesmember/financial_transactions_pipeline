@@ -25,6 +25,27 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+BENCHMARK_RESULT_COLUMNS = (
+    "backend",
+    "framework_model",
+    "split",
+    "threshold",
+    "precision",
+    "recall",
+    "f1",
+    "fbeta",
+    "pr_auc",
+    "tp",
+    "fp",
+    "tn",
+    "fn",
+    "alerts",
+    "alert_rate",
+    "roc_auc",
+    "business_cost",
+)
+
+
 @dataclass(frozen=True)
 class BenchmarkDataset:
     """Feature frames shared by external benchmark adapters."""
@@ -256,9 +277,14 @@ class ExternalBenchmarkRunner:
         )
         rows: list[dict[str, Any]] = []
         summary: list[dict[str, Any]] = []
-        for backend in self.settings.external_benchmark_backends:
+        for backend in self.settings.enabled_external_benchmark_backends:
             adapter = self._adapters[backend]()
             if not adapter.is_available():
+                logger.warning(
+                    "Benchmark externo indisponivel | backend=%s | dependencia=%s",
+                    backend,
+                    adapter.import_name,
+                )
                 summary.append(
                     {
                         "backend": backend,
@@ -320,8 +346,26 @@ class ExternalBenchmarkRunner:
                         "metadata": fitted.metadata,
                     }
                 )
+            except KeyboardInterrupt as exc:
+                logger.warning(
+                    "Benchmark externo interrompido; treino principal sera preservado | backend=%s",
+                    backend,
+                    exc_info=True,
+                )
+                summary.append(
+                    {
+                        "backend": backend,
+                        "status": "interrupted",
+                        "message": type(exc).__name__,
+                        "duration_seconds": perf_counter() - started,
+                    }
+                )
             except Exception as exc:
-                logger.exception("Benchmark externo falhou | backend=%s", backend)
+                logger.warning(
+                    "Benchmark externo falhou; treino principal sera preservado | backend=%s",
+                    backend,
+                    exc_info=True,
+                )
                 summary.append(
                     {
                         "backend": backend,
@@ -330,10 +374,8 @@ class ExternalBenchmarkRunner:
                         "duration_seconds": perf_counter() - started,
                     }
                 )
-                if self.settings.external_benchmark_fail_fast:
-                    raise
 
-        pd.DataFrame(rows).to_csv(results_path, index=False)
+        pd.DataFrame(rows, columns=BENCHMARK_RESULT_COLUMNS).to_csv(results_path, index=False)
         safe_summary = _json_safe(summary)
         summary_path.write_text(
             json.dumps(

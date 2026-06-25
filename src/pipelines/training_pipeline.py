@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import joblib
 import pandas as pd
@@ -20,16 +21,23 @@ from src.ingestion.import_service import DatasetImportService
 from src.models.baseline import BaselineRegistry
 from src.models.baseline_decision import BaselineDecisionService
 from src.models.calibration import write_calibration_artifacts
+from src.models.data_drift import DataDriftReportService
 from src.models.evaluate import evaluate_binary_classifier
-from src.models.external_benchmarks import ExternalBenchmarkRunner
+from src.models.external_benchmarks import BENCHMARK_RESULT_COLUMNS, ExternalBenchmarkRunner
 from src.models.feature_report import build_feature_importance
-from src.models.governance_artifacts import write_manifest, write_model_card
+from src.models.governance_artifacts import (
+    write_manifest,
+    write_model_card,
+    write_model_review_report,
+)
 from src.models.leakage_audit import LeakageAuditService
 from src.models.mlflow_tracking import MlflowTrackingService
 from src.models.optuna_search import OptunaModelSelector
-from src.models.robustness import run_geographic_ablation
+from src.models.robustness import run_geographic_ablation, write_robustness_reports
+from src.models.target_audit import TargetAuditService
 from src.models.threshold import find_best_threshold
 from src.models.threshold_analysis import (
+    build_threshold_recommendations,
     build_cost_scenario_summary,
     build_threshold_table,
     select_business_threshold,
@@ -38,6 +46,7 @@ from src.models.threshold_analysis import (
 from src.models.train import FraudModelTrainer
 from src.models.training_history import TrainingHistoryRegistry
 from src.models.versioning import code_version, dataset_fingerprint, experiment_fingerprint
+from src.models.walk_forward import WalkForwardValidator
 from src.storage.postgres_training_history import PostgresTrainingHistoryRepository
 from src.storage.sync import StorageSyncService
 from src.utils.logger import get_logger
@@ -83,6 +92,8 @@ class TrainingPipeline:
         repository = RawDataRepository(self.settings)
         raw = repository.load_all()
         raw["transactions"] = TrainingDataLimiter(self.settings.training_max_rows).apply(raw["transactions"])
+        raw_transactions = raw["transactions"].copy()
+        raw_labels = raw["labels"]
         merged = FraudDataMerger(self.settings).merge(
             transactions=raw["transactions"],
             cards=raw["cards"],
@@ -94,6 +105,12 @@ class TrainingPipeline:
 
         cleaned_for_split = FraudDataCleaner(self.settings).fit_transform(merged)
         splits = TemporalSplitter(self.settings).split(cleaned_for_split)
+        target_audit = TargetAuditService(self.settings).build(
+            raw_transactions,
+            raw_labels,
+            splits,
+            self.settings.artifacts_dir,
+        )
 
         X_train, y_train = self._split_xy(splits.train)
         X_val, y_val = self._split_xy(splits.validation)
@@ -173,6 +190,7 @@ class TrainingPipeline:
             threshold_metrics,
         )
 
+        train_scores = self._predict_scores(pipeline, X_train)
         test_scores = self._predict_scores(pipeline, X_test)
         out_of_time_scores = self._predict_scores(pipeline, X_out_of_time)
         test_table = build_threshold_table(
@@ -193,12 +211,26 @@ class TrainingPipeline:
             false_negative_cost=self.settings.false_negative_cost,
             split="out_of_time",
         )
-        pd.concat(
+        threshold_analysis = pd.concat(
             [validation_table, test_table, out_of_time_table],
             ignore_index=True,
-        ).to_csv(
+        )
+        threshold_analysis.to_csv(
             self.settings.threshold_analysis_path,
             index=False,
+        )
+        threshold_recommendations = build_threshold_recommendations(
+            threshold_analysis,
+            max_alert_rate=self.settings.promotion_max_alert_rate,
+        )
+        self.settings.artifact_path(self.settings.threshold_recommendations_filename).write_text(
+            json.dumps(
+                threshold_recommendations,
+                indent=2,
+                ensure_ascii=True,
+                allow_nan=False,
+            ),
+            encoding="utf-8",
         )
         cost_scenarios = build_cost_scenario_summary(
             {
@@ -213,6 +245,9 @@ class TrainingPipeline:
         cost_scenarios.to_csv(
             self.settings.artifact_path(self.settings.threshold_cost_scenarios_filename),
             index=False,
+        )
+        train_metrics = evaluate_binary_classifier(
+            y_train.to_numpy(), train_scores, threshold=threshold, beta=self.settings.threshold_beta
         )
         validation_metrics = evaluate_binary_classifier(
             y_val.to_numpy(), validation_scores, threshold=threshold, beta=self.settings.threshold_beta
@@ -245,15 +280,44 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.feature_importance_filename),
             index=False,
         )
-        if self.settings.run_geo_ablation:
-            primary_ablation_metrics = {
+        important_features = feature_importance["feature_name"].head(30).tolist() if not feature_importance.empty else []
+        drift_report = DataDriftReportService(self.settings).build(
+            splits,
+            self.settings.artifacts_dir,
+            important_features=important_features,
+        )
+        metrics_by_split = {
+            "train": {
+                **train_metrics,
+                "business_cost": (
+                    train_metrics["fp"] * self.settings.false_positive_cost
+                    + train_metrics["fn"] * self.settings.false_negative_cost
+                ),
+            },
+            "validation": {
+                **validation_metrics,
+                "business_cost": (
+                    validation_metrics["fp"] * self.settings.false_positive_cost
+                    + validation_metrics["fn"] * self.settings.false_negative_cost
+                ),
+            },
+            "test": {
                 **test_metrics,
                 "business_cost": (
                     test_metrics["fp"] * self.settings.false_positive_cost
                     + test_metrics["fn"] * self.settings.false_negative_cost
                 ),
-            }
-            run_geographic_ablation(
+            },
+            "out_of_time": {
+                **out_of_time_metrics,
+                "business_cost": (
+                    out_of_time_metrics["fp"] * self.settings.false_positive_cost
+                    + out_of_time_metrics["fn"] * self.settings.false_negative_cost
+                ),
+            },
+        }
+        if self.settings.run_geo_ablation:
+            robustness_results = run_geographic_ablation(
                 self.settings,
                 run_id,
                 selected_model_name,
@@ -264,44 +328,49 @@ class TrainingPipeline:
                 y_val,
                 X_test,
                 y_test,
-                primary_ablation_metrics,
+                X_out_of_time,
+                y_out_of_time,
+                metrics_by_split,
                 feature_importance,
-            ).to_csv(
-                self.settings.artifact_path(self.settings.geo_ablation_filename),
-                index=False,
             )
-        benchmark_runner = ExternalBenchmarkRunner(self.settings)
+        else:
+            robustness_results = pd.DataFrame()
+        robustness_results.to_csv(
+            self.settings.artifact_path(self.settings.geo_ablation_filename),
+            index=False,
+        )
+        robustness_report = write_robustness_reports(
+            robustness_results,
+            self.settings.artifacts_dir,
+            self.settings,
+        )
+        walk_forward_report = WalkForwardValidator(self.settings).run(
+            cleaned_for_split,
+            splits.time_column,
+            selected_model_name,
+            selected_model_params,
+            self.settings.artifacts_dir,
+        )
         benchmark_results_path = self.settings.artifact_path(
             self.settings.external_benchmark_filename
         )
         benchmark_summary_path = self.settings.artifact_path(
             self.settings.external_benchmark_summary_filename
         )
-        if self.settings.external_benchmarks_enabled:
-            benchmark_dataset = benchmark_runner.prepare_dataset(
-                pipeline,
-                X_train,
-                y_train,
-                X_val,
-                y_val,
-                X_test,
-                y_test,
-                X_out_of_time,
-                y_out_of_time,
-            )
-            external_benchmark_summary = benchmark_runner.run(
-                benchmark_dataset,
-                results_path=benchmark_results_path,
-                summary_path=benchmark_summary_path,
-                output_dir=self.settings.artifacts_dir / "external_benchmarks" / run_id,
-            )
-        else:
-            pd.DataFrame().to_csv(benchmark_results_path, index=False)
-            external_benchmark_summary = [{"status": "disabled"}]
-            benchmark_summary_path.write_text(
-                json.dumps(external_benchmark_summary, indent=2),
-                encoding="utf-8",
-            )
+        external_benchmark_summary = self._run_external_benchmarks(
+            pipeline,
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            X_test,
+            y_test,
+            X_out_of_time,
+            y_out_of_time,
+            run_id,
+            benchmark_results_path,
+            benchmark_summary_path,
+        )
         try:
             external_rows = pd.read_csv(benchmark_results_path)
         except pd.errors.EmptyDataError:
@@ -325,7 +394,13 @@ class TrainingPipeline:
                 )
             ]
         )
-        pd.concat([internal_rows, external_rows], ignore_index=True).to_csv(
+        benchmark_rows = internal_rows
+        if not external_rows.empty:
+            benchmark_rows = pd.concat(
+                [internal_rows, external_rows.dropna(axis=1, how="all")],
+                ignore_index=True,
+            )
+        benchmark_rows.to_csv(
             benchmark_results_path,
             index=False,
         )
@@ -382,6 +457,7 @@ class TrainingPipeline:
             "model_selection": selection_metadata,
             "external_benchmarks": external_benchmark_summary,
             "threshold": threshold,
+            "train_metrics": train_metrics,
             "validation_metrics": validation_metrics,
             "test_metrics": test_metrics,
             "out_of_time_metrics": out_of_time_metrics,
@@ -429,6 +505,10 @@ class TrainingPipeline:
                 ),
             },
             "leakage_audit_status": leakage_report["status"],
+            "target_audit_status": target_audit["status"],
+            "data_drift_status": drift_report["status"],
+            "robustness_status": robustness_report["status"],
+            "walk_forward_status": walk_forward_report["status"],
             "dataset_version": dataset_version,
             "dataset_sha256": dataset_version,
             "feature_set_version": self.settings.feature_set_version,
@@ -447,11 +527,22 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.out_of_time_metrics_filename),
             self.settings.artifact_path(self.settings.optuna_trials_filename),
             self.settings.artifact_path(self.settings.optuna_study_filename),
+            self.settings.artifact_path(self.settings.target_audit_filename),
+            self.settings.artifact_path(self.settings.target_audit_markdown_filename),
+            self.settings.artifact_path(self.settings.data_drift_report_filename),
+            self.settings.artifact_path(self.settings.data_drift_markdown_filename),
+            self.settings.artifact_path(self.settings.robustness_report_filename),
+            self.settings.artifact_path(self.settings.geo_ablation_report_filename),
+            self.settings.artifact_path(self.settings.threshold_recommendations_filename),
         ]
         baseline_decision = BaselineDecisionService(self.settings).decide(
             metadata,
             leakage_report,
             required_for_decision,
+            target_audit=target_audit,
+            drift_report=drift_report,
+            robustness_report=robustness_report,
+            walk_forward_report=walk_forward_report,
         )
         metadata["baseline_decision"] = baseline_decision
         if baseline_decision["decision"] == "reject":
@@ -466,6 +557,17 @@ class TrainingPipeline:
             metadata,
             leakage_report,
             baseline_decision,
+        )
+        write_model_review_report(
+            self.settings.artifact_path(self.settings.model_review_report_filename),
+            metadata,
+            leakage_report,
+            baseline_decision,
+            target_audit,
+            drift_report,
+            robustness_report,
+            walk_forward_report,
+            threshold_recommendations,
         )
         manifest_path = self.settings.artifact_path(self.settings.manifest_filename)
         write_manifest(
@@ -492,7 +594,7 @@ class TrainingPipeline:
         )
         logger.info("Pipeline e metadados salvos em %s", self.settings.artifacts_dir)
         baseline_registry: BaselineRegistry | None = None
-        if self.settings.promote_baseline and baseline_decision["decision"] == "promote":
+        if self.settings.promote_baseline and baseline_decision["decision"] == "approved":
             baseline_registry = BaselineRegistry(self.settings)
             baseline_registry.promote(
                 metadata,
@@ -539,6 +641,117 @@ class TrainingPipeline:
             history_run_dir=history_run_dir,
             baseline_decision=baseline_decision["decision"],
         )
+
+    def _run_external_benchmarks(
+        self,
+        pipeline,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: pd.DataFrame,
+        y_val: pd.Series,
+        X_test: pd.DataFrame,
+        y_test: pd.Series,
+        X_out_of_time: pd.DataFrame,
+        y_out_of_time: pd.Series,
+        run_id: str,
+        benchmark_results_path: Path,
+        benchmark_summary_path: Path,
+    ) -> list[dict[str, Any]]:
+        """Run optional external benchmarks without making them a training gate."""
+        if not self.settings.external_benchmarks_enabled:
+            return self._write_external_benchmark_status(
+                benchmark_results_path,
+                benchmark_summary_path,
+                [{"status": "disabled", "message": "Benchmarks externos desabilitados."}],
+            )
+        if not self.settings.enabled_external_benchmark_backends:
+            return self._write_external_benchmark_status(
+                benchmark_results_path,
+                benchmark_summary_path,
+                [
+                    {
+                        "status": "disabled",
+                        "message": "Nenhum backend de benchmark externo habilitado.",
+                    }
+                ],
+            )
+
+        benchmark_runner = ExternalBenchmarkRunner(self.settings)
+        started_at = datetime.now(timezone.utc)
+        try:
+            benchmark_dataset = benchmark_runner.prepare_dataset(
+                pipeline,
+                X_train,
+                y_train,
+                X_val,
+                y_val,
+                X_test,
+                y_test,
+                X_out_of_time,
+                y_out_of_time,
+            )
+            return benchmark_runner.run(
+                benchmark_dataset,
+                results_path=benchmark_results_path,
+                summary_path=benchmark_summary_path,
+                output_dir=self.settings.artifacts_dir / "external_benchmarks" / run_id,
+            )
+        except KeyboardInterrupt as exc:
+            duration = (datetime.now(timezone.utc) - started_at).total_seconds()
+            logger.warning(
+                "Etapa de benchmarks externos interrompida; treino principal sera preservado.",
+                exc_info=True,
+            )
+            return self._write_external_benchmark_status(
+                benchmark_results_path,
+                benchmark_summary_path,
+                [
+                    {
+                        "backend": "external_benchmarks",
+                        "status": "interrupted",
+                        "message": type(exc).__name__,
+                        "duration_seconds": duration,
+                    }
+                ],
+            )
+        except Exception as exc:
+            duration = (datetime.now(timezone.utc) - started_at).total_seconds()
+            logger.warning(
+                "Etapa de benchmarks externos falhou; treino principal sera preservado.",
+                exc_info=True,
+            )
+            return self._write_external_benchmark_status(
+                benchmark_results_path,
+                benchmark_summary_path,
+                [
+                    {
+                        "backend": "external_benchmarks",
+                        "status": "failed",
+                        "message": str(exc),
+                        "duration_seconds": duration,
+                    }
+                ],
+            )
+
+    @staticmethod
+    def _write_external_benchmark_status(
+        results_path: Path,
+        summary_path: Path,
+        summary: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Persist empty benchmark results plus a machine-readable status summary."""
+        pd.DataFrame(columns=BENCHMARK_RESULT_COLUMNS).to_csv(results_path, index=False)
+        summary_path.write_text(
+            json.dumps(
+                summary,
+                indent=2,
+                ensure_ascii=True,
+                allow_nan=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+        return summary
 
     def _select_threshold(
         self,

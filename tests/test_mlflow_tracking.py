@@ -5,6 +5,9 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+import joblib
+import pandas as pd
+
 from src.config.settings import Settings
 from src.models.mlflow_tracking import MlflowTrackingService
 
@@ -62,6 +65,38 @@ class _FakeMlflow:
         self.artifacts = {
             "local_dir": local_dir,
             "artifact_path": artifact_path,
+        }
+
+
+class _FakeMlflowModels:
+    def __init__(self) -> None:
+        self.input_example = None
+
+    def infer_signature(self, input_example, prediction_example):
+        self.input_example = input_example
+        return "signature"
+
+
+class _FakeMlflowSklearn:
+    def __init__(self) -> None:
+        self.logged_model = None
+
+    def log_model(
+        self,
+        sk_model,
+        name=None,
+        signature=None,
+        input_example=None,
+        registered_model_name=None,
+        serialization_format=None,
+    ) -> None:
+        self.logged_model = {
+            "sk_model": sk_model,
+            "name": name,
+            "signature": signature,
+            "input_example": input_example,
+            "registered_model_name": registered_model_name,
+            "serialization_format": serialization_format,
         }
 
 
@@ -133,3 +168,32 @@ def test_mlflow_tracking_logs_governed_run_without_real_server(tmp_path, monkeyp
     assert fake_mlflow.metrics["selected_threshold"] == 0.2
     assert fake_mlflow.metrics["test_business_cost"] == 20.0
     assert fake_mlflow.artifacts["artifact_path"] == "governance"
+
+
+def test_mlflow_model_logging_uses_cloudpickle_and_stable_input_schema(
+    tmp_path,
+) -> None:
+    fake_mlflow = SimpleNamespace(
+        models=_FakeMlflowModels(),
+        sklearn=_FakeMlflowSklearn(),
+    )
+    run_dir = tmp_path / "history" / "run-1"
+    run_dir.mkdir(parents=True)
+    joblib.dump({"model": "fake"}, run_dir / "fraud_pipeline.joblib")
+    settings = Settings(
+        project_root=tmp_path,
+        mlflow_tracking_enabled=True,
+        mlflow_log_model=True,
+    )
+
+    MlflowTrackingService(settings)._log_model(
+        fake_mlflow,
+        run_dir,
+        input_example=pd.DataFrame({"card_id": [1, 2], "amount": [10.0, 20.0]}),
+        prediction_example=[0.1, 0.2],
+    )
+
+    assert fake_mlflow.sklearn.logged_model["name"] == "model"
+    assert fake_mlflow.sklearn.logged_model["signature"] == "signature"
+    assert fake_mlflow.sklearn.logged_model["serialization_format"] == "cloudpickle"
+    assert str(fake_mlflow.models.input_example["card_id"].dtype) == "float64"

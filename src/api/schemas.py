@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class PredictionRequest(BaseModel):
@@ -65,9 +65,18 @@ class TrainingRequest(BaseModel):
     out_of_time_size: float | None = Field(default=None, gt=0.0, lt=1.0)
     leakage_roc_auc_warning: float | None = Field(default=None, ge=0.0, le=1.0)
     strict_leakage_prevention: bool | None = None
+    external_benchmarks_enabled: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("EXTERNAL_BENCHMARKS_ENABLED", "RUN_EXTERNAL_BENCHMARKS"),
+    )
+    run_autogluon_benchmark: bool | None = None
+    run_h2o_benchmark: bool | None = None
+    run_flaml_benchmark: bool | None = None
     promote_baseline: bool | None = None
     baseline_overwrite: bool | None = None
     run_geo_ablation: bool | None = None
+    walk_forward_enabled: bool | None = None
+    walk_forward_folds: int | None = Field(default=None, ge=2)
     training_history_save_pipeline: bool | None = None
     mlflow_tracking_enabled: bool | None = None
     mlflow_tracking_uri: str | None = None

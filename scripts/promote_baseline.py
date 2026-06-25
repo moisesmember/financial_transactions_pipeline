@@ -77,7 +77,7 @@ def main() -> None:
         ]
 
     decision = metadata.get("baseline_decision", {}).get("decision")
-    if decision != "promote":
+    if decision != "approved":
         raise ValueError(
             f"Run nao aprovado pela politica de baseline: {decision or 'sem decisao'}."
         )

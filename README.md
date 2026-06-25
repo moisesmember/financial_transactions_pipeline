@@ -422,6 +422,25 @@ adequado para treinamento local com scikit-learn.
 
 Cada treinamento gera:
 
+- `artifacts/target_audit.json`, `target_audit.md`,
+  `target_audit_by_split.csv` e `target_audit_by_period.csv`: auditoria de
+  labels, cobertura temporal, duplicidades e risco de tratar transações sem
+  label como negativas.
+- `artifacts/data_drift_report.json`, `data_drift_report.md`,
+  `data_drift_numeric.csv` e `data_drift_categorical.csv`: comparação de
+  distribuição entre treino, validação, teste e out-of-time, com PSI/KS quando
+  aplicável.
+- `artifacts/robustness_report.json`, `robustness_report.md`,
+  `geo_ablation_report.json` e `geo_ablation_report.md`: experimentos de
+  robustez e ablação geográfica, incluindo variantes sem coordenadas, sem
+  cidade/estado, sem todas as features geográficas e baseline interpretável.
+- `artifacts/walk_forward_report.json` e `walk_forward_report.md`: validação
+  temporal expansiva quando `WALK_FORWARD_ENABLED=true`; caso contrário o
+  relatório registra explicitamente `disabled`.
+- `artifacts/model_review_report.md`: relatório consolidado para revisão humana
+  com decisão, métricas, auditorias, drift, threshold e próximos passos.
+- `artifacts/threshold_recommendations.json`: recomendações complementares de
+  threshold, mantendo a seleção operacional baseada apenas na validação.
 - `artifacts/optuna_trials.csv`: parâmetros, PR-AUC, threshold, custo e estado
   de todos os trials.
 - `artifacts/optuna_study.json`: vencedor, parâmetros, seed e objetivo da busca.
@@ -448,6 +467,24 @@ Cada treinamento gera:
   thresholds e pipeline daquela execução.
 - `artifacts/history/runs.csv`: índice consolidado para comparar todos os
   treinamentos.
+
+### Política de decisão
+
+A decisão final agora é uma das opções:
+
+- `reject`: falhou em gates bloqueantes, como recall out-of-time mínimo,
+  queda relativa de PR-AUC/recall, custo contra baseline, falha crítica de
+  auditoria ou evidências fortes de instabilidade.
+- `candidate`: passou nos gates automáticos, mas ainda não foi solicitado
+  promover para produção.
+- `pending_review`: não há bloqueio automático, mas existem warnings sem
+  justificativa, drift, auditoria pendente ou revisão humana obrigatória.
+- `approved`: aprovado pela política e elegível para promoção quando
+  `PROMOTE_BASELINE=true`.
+
+A pipeline pode rejeitar automaticamente. Promoção para produção continua
+dependendo de política explícita e não ocorre quando há warnings não
+justificados, instabilidade temporal relevante ou queda ruim em teste/OOT.
 
 O threshold é escolhido somente na validação. Teste e OOT confirmam desempenho,
 estabilidade temporal, custo e capacidade operacional. Um threshold no limite
@@ -485,17 +522,33 @@ MODEL_NAME=logistic_regression
 ### Benchmarks externos
 
 ```bash
-EXTERNAL_BENCHMARKS_ENABLED=true
+RUN_EXTERNAL_BENCHMARKS=false
+RUN_AUTOGLUON_BENCHMARK=false
+RUN_H2O_BENCHMARK=false
+RUN_FLAML_BENCHMARK=false
 EXTERNAL_BENCHMARK_BACKENDS=autogluon,h2o,flaml
 EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS=300
 EXTERNAL_BENCHMARK_MAX_MODELS=10
-EXTERNAL_BENCHMARK_FAIL_FAST=false
 ```
 
 Os benchmarks recebem as mesmas features governadas e usam somente
 treino/validação para ajuste. O threshold é selecionado na validação e aplicado
 em teste/OOT. Os resultados são comparativos: um benchmark externo não é
 promovido automaticamente nem substitui `fraud_pipeline.joblib`.
+
+Por padrão eles ficam desativados para preservar o treinamento principal. Para
+rodar somente H2O, por exemplo:
+
+```bash
+RUN_EXTERNAL_BENCHMARKS=true
+RUN_AUTOGLUON_BENCHMARK=false
+RUN_H2O_BENCHMARK=true
+RUN_FLAML_BENCHMARK=false
+```
+
+Falhas, dependências ausentes e interrupções de benchmarks externos são
+registradas como `WARNING` e no `external_benchmark_summary.json`; os artefatos
+governados, a persistência no PostgreSQL e a sincronização com MinIO continuam.
 
 Configure os custos relativos no `.env`:
 
@@ -558,9 +611,16 @@ PROMOTION_MAX_COST_INCREASE=0.05
 BASELINE_WARNING_JUSTIFICATION=
 ```
 
-Para executar as ablações geográficas A-D, habilite
-`RUN_GEO_ABLATION=true`. Esse modo treina três modelos adicionais e aumenta
+Para executar as ablações geográficas e os experimentos de robustez, habilite
+`RUN_GEO_ABLATION=true`. Esse modo treina variantes adicionais e aumenta
 consideravelmente tempo e memória.
+
+Para executar validação temporal walk-forward:
+
+```bash
+WALK_FORWARD_ENABLED=true
+WALK_FORWARD_FOLDS=4
+```
 
 Uma auditoria com status `warning` não comprova vazamento, mas exige revisão.
 Neste dataset, atributos de snapshot como `card_on_dark_web`, `credit_score` e

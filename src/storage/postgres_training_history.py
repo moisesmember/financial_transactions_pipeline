@@ -113,7 +113,7 @@ class PostgresTrainingHistoryRepository:
                 decision = historical_metadata.get("baseline_decision", {}).get("decision")
                 if (
                     self.settings.promote_baseline
-                    and decision == "promote"
+                    and decision == "approved"
                     and "baseline_promotions" in available_tables
                 ):
                     self._insert_baseline_promotion(
@@ -557,7 +557,7 @@ class PostgresTrainingHistoryRepository:
                 "is_active": True,
                 "metadata": historical_metadata,
                 "previous_baseline_run_id": previous_baseline_run_id,
-                "decision": "promote",
+                "decision": "approved",
                 "decision_reason": historical_metadata.get("baseline_decision", {}).get("reasons"),
                 "approval_status": "approved",
                 "rollback_available": True,
@@ -590,6 +590,22 @@ class PostgresTrainingHistoryRepository:
             self.settings.baseline_decision_filename: "baseline_decision",
             self.settings.manifest_filename: "manifest",
             self.settings.geo_ablation_filename: "geo_ablation",
+            self.settings.robustness_report_filename: "robustness_report_json",
+            self.settings.robustness_markdown_filename: "robustness_report_markdown",
+            self.settings.geo_ablation_report_filename: "geo_ablation_report_json",
+            self.settings.geo_ablation_markdown_filename: "geo_ablation_report_markdown",
+            self.settings.target_audit_filename: "target_audit_json",
+            self.settings.target_audit_markdown_filename: "target_audit_markdown",
+            self.settings.target_audit_by_split_filename: "target_audit_by_split",
+            self.settings.target_audit_by_period_filename: "target_audit_by_period",
+            self.settings.data_drift_report_filename: "data_drift_report_json",
+            self.settings.data_drift_markdown_filename: "data_drift_report_markdown",
+            self.settings.data_drift_numeric_filename: "data_drift_numeric",
+            self.settings.data_drift_categorical_filename: "data_drift_categorical",
+            self.settings.walk_forward_report_filename: "walk_forward_report_json",
+            self.settings.walk_forward_markdown_filename: "walk_forward_report_markdown",
+            self.settings.model_review_report_filename: "model_review_report",
+            self.settings.threshold_recommendations_filename: "threshold_recommendations",
             self.settings.optuna_trials_filename: "optuna_trials",
             self.settings.optuna_study_filename: "optuna_study",
             self.settings.external_benchmark_filename: "external_benchmark_results",

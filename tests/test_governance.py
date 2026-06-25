@@ -254,20 +254,23 @@ def test_baseline_decision_keeps_candidate_when_threshold_is_at_boundary(tmp_pat
     }
 
     decision = BaselineDecisionService(settings).decide(
-        {"test_metrics": metrics, "out_of_time_metrics": metrics},
+        {"validation_metrics": metrics, "test_metrics": metrics, "out_of_time_metrics": metrics},
         {
             "status": "warning",
             "warnings": ["threshold"],
             "checks": {"threshold_at_analysis_boundary": True},
         },
         [required],
+        target_audit={"status": "pass"},
+        drift_report={"status": "pass"},
+        robustness_report={"status": "pass", "geo_ablation": {"status": "pass"}},
     )
 
-    assert decision["decision"] == "keep_candidate"
+    assert decision["decision"] == "pending_review"
 
 
-def test_baseline_decision_promotes_when_all_gates_pass(tmp_path) -> None:
-    settings = Settings(project_root=tmp_path)
+def test_baseline_decision_approves_when_all_gates_pass_and_promotion_requested(tmp_path) -> None:
+    settings = Settings(project_root=tmp_path, promote_baseline=True)
     required = tmp_path / "artifact"
     required.write_text("ok", encoding="utf-8")
     test_metrics = {
@@ -282,9 +285,12 @@ def test_baseline_decision_promotes_when_all_gates_pass(tmp_path) -> None:
     oot_metrics = {**test_metrics, "pr_auc": 0.75}
 
     decision = BaselineDecisionService(settings).decide(
-        {"test_metrics": test_metrics, "out_of_time_metrics": oot_metrics},
+        {"validation_metrics": test_metrics, "test_metrics": test_metrics, "out_of_time_metrics": oot_metrics},
         {"status": "pass", "warnings": [], "checks": {}},
         [required],
+        target_audit={"status": "pass"},
+        drift_report={"status": "pass"},
+        robustness_report={"status": "pass", "geo_ablation": {"status": "pass"}},
     )
 
-    assert decision["decision"] == "promote"
+    assert decision["decision"] == "approved"

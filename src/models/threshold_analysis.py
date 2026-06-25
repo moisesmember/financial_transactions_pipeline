@@ -123,3 +123,115 @@ def build_cost_scenario_summary(
             selected = table.loc[np.isclose(table["threshold"], selected_threshold)].iloc[0]
             rows.append(selected.to_dict())
     return pd.DataFrame(rows)
+
+
+def build_threshold_recommendations(
+    threshold_table: pd.DataFrame,
+    max_alert_rate: float,
+) -> dict[str, dict[str, float | str] | None]:
+    """Generate threshold recommendations without changing the validation-selected threshold."""
+    validation = threshold_table.loc[threshold_table["split"].eq("validation")]
+    if validation.empty:
+        return {
+            "validation_lowest_cost": None,
+            "most_stable": None,
+            "max_recall_with_alert_cap": None,
+            "retrospective_out_of_time_lowest_cost": None,
+        }
+    validation_lowest_cost = _row_to_dict(
+        validation.sort_values(
+            ["business_cost", "fn", "fp", "threshold"],
+            ascending=[True, True, True, False],
+        ).iloc[0],
+        rationale="Menor custo na validacao; elegivel para selecao operacional.",
+    )
+
+    stable = _stable_threshold(threshold_table)
+    alert_cap = validation.loc[validation["alert_rate"].le(max_alert_rate)]
+    max_recall_with_alert_cap = None
+    if not alert_cap.empty:
+        max_recall_with_alert_cap = _row_to_dict(
+            alert_cap.sort_values(
+                ["recall", "business_cost", "threshold"],
+                ascending=[False, True, False],
+            ).iloc[0],
+            rationale="Maior recall na validacao respeitando capacidade operacional.",
+        )
+
+    oot = threshold_table.loc[threshold_table["split"].eq("out_of_time")]
+    retrospective_oot = None
+    if not oot.empty:
+        retrospective_oot = _row_to_dict(
+            oot.sort_values(
+                ["business_cost", "fn", "fp", "threshold"],
+                ascending=[True, True, True, False],
+            ).iloc[0],
+            rationale="Menor custo OOT apenas retrospectivo; nao usar para selecao real.",
+        )
+
+    return {
+        "validation_lowest_cost": validation_lowest_cost,
+        "most_stable": stable,
+        "max_recall_with_alert_cap": max_recall_with_alert_cap,
+        "retrospective_out_of_time_lowest_cost": retrospective_oot,
+    }
+
+
+def _stable_threshold(threshold_table: pd.DataFrame) -> dict[str, float | str] | None:
+    required_splits = {"validation", "test", "out_of_time"}
+    if not required_splits <= set(threshold_table["split"]):
+        return None
+    rows = []
+    for threshold, group in threshold_table.groupby("threshold"):
+        if not required_splits <= set(group["split"]):
+            continue
+        rows.append(
+            {
+                "threshold": float(threshold),
+                "split": "all",
+                "precision": float(group["precision"].mean()),
+                "recall": float(group["recall"].mean()),
+                "f1": float(group["f1"].mean()),
+                "fbeta": float(group["fbeta"].mean()),
+                "alert_rate": float(group["alert_rate"].mean()),
+                "business_cost": float(group["business_cost"].mean()),
+                "cost_per_record": float(group["cost_per_record"].mean()),
+                "stability_score": float(
+                    group["recall"].std(ddof=0)
+                    + group["cost_per_record"].std(ddof=0)
+                    + group["alert_rate"].std(ddof=0)
+                ),
+            }
+        )
+    if not rows:
+        return None
+    selected = pd.DataFrame(rows).sort_values(
+        ["stability_score", "business_cost", "threshold"],
+        ascending=[True, True, False],
+    ).iloc[0]
+    return _row_to_dict(
+        selected,
+        rationale="Menor variacao de recall, custo por registro e alert rate entre splits.",
+    )
+
+
+def _row_to_dict(row: pd.Series, rationale: str) -> dict[str, float | str]:
+    keys = (
+        "split",
+        "threshold",
+        "precision",
+        "recall",
+        "f1",
+        "fbeta",
+        "alert_rate",
+        "business_cost",
+        "cost_per_record",
+        "stability_score",
+    )
+    payload = {
+        key: float(row[key]) if key != "split" else str(row[key])
+        for key in keys
+        if key in row and pd.notna(row[key])
+    }
+    payload["rationale"] = rationale
+    return payload

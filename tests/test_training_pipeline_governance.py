@@ -67,7 +67,10 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
     assert metadata["model_selection"]["engine"] == "optuna"
     assert metadata["model_selection"]["trial_count"] == 2
     assert metadata["model_name"] == "logistic_regression"
-    assert decision["decision"] in {"promote", "keep_candidate", "reject"}
+    assert decision["decision"] in {"approved", "candidate", "pending_review", "reject"}
+    assert settings.artifact_path(settings.target_audit_filename).exists()
+    assert settings.artifact_path(settings.data_drift_report_filename).exists()
+    assert settings.artifact_path(settings.model_review_report_filename).exists()
     for filename in settings.governance_artifact_filenames:
         if filename == settings.geo_ablation_filename:
             continue

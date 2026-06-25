@@ -97,7 +97,7 @@ def build_preprocessor(
         ]
     )
 
-    return ColumnTransformer(
+    preprocessor = ColumnTransformer(
         transformers=[
             ("numeric", numeric_pipeline, numeric_columns),
             ("categorical", categorical_pipeline, categorical_columns),
@@ -107,3 +107,5 @@ def build_preprocessor(
         verbose_feature_names_out=False,
         sparse_threshold=0.3 if selected_model != "hist_gradient_boosting" else 0.0,
     )
+    preprocessor.set_output(transform="default")
+    return preprocessor

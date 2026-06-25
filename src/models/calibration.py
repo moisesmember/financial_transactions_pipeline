@@ -24,6 +24,9 @@ def write_calibration_artifacts(
     decile_frames: list[pd.DataFrame] = []
     metrics: dict[str, dict[str, float]] = {}
     try:
+        import matplotlib
+
+        matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
         plt = None

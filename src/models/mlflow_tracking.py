@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from inspect import signature as inspect_signature
 from importlib import import_module
 from pathlib import Path
 from typing import Any
@@ -101,11 +102,15 @@ class MlflowTrackingService:
             return
 
         model = joblib.load(pipeline_path)
+        model_input_example = self._prepare_input_example(input_example)
         signature = None
-        if input_example is not None and prediction_example is not None:
+        if model_input_example is not None and prediction_example is not None:
             try:
                 mlflow_models = getattr(mlflow, "models", None) or import_module("mlflow.models")
-                signature = mlflow_models.infer_signature(input_example, prediction_example)
+                signature = mlflow_models.infer_signature(
+                    model_input_example,
+                    prediction_example,
+                )
             except Exception as exc:  # noqa: BLE001 - signature is useful, not mandatory
                 logger.info("Assinatura MLflow ignorada | erro=%s", exc)
 
@@ -115,12 +120,19 @@ class MlflowTrackingService:
             else None
         )
         mlflow_sklearn = getattr(mlflow, "sklearn", None) or import_module("mlflow.sklearn")
+        log_model_signature = inspect_signature(mlflow_sklearn.log_model)
+        model_location_argument = (
+            {"name": "model"}
+            if "name" in log_model_signature.parameters
+            else {"artifact_path": "model"}
+        )
         mlflow_sklearn.log_model(
             sk_model=model,
-            artifact_path="model",
+            **model_location_argument,
             signature=signature,
-            input_example=input_example,
+            input_example=model_input_example,
             registered_model_name=registered_model_name,
+            serialization_format="cloudpickle",
         )
 
     def _params(self, metadata: dict[str, Any]) -> dict[str, str]:
@@ -200,6 +212,16 @@ class MlflowTrackingService:
         if len(text) > 500:
             return text[:497] + "..."
         return text
+
+    @staticmethod
+    def _prepare_input_example(input_example: pd.DataFrame | None) -> pd.DataFrame | None:
+        if input_example is None:
+            return None
+        prepared = input_example.copy()
+        integer_columns = prepared.select_dtypes(include=["integer"]).columns
+        if len(integer_columns) > 0:
+            prepared[integer_columns] = prepared[integer_columns].astype("float64")
+        return prepared
 
     @staticmethod
     def _is_number(value: Any) -> bool:
