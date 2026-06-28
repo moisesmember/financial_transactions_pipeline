@@ -17,25 +17,36 @@ class FraudPredictionService:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._ensure_local_artifacts()
+        downloaded_paths = self._ensure_local_artifacts()
         self.pipeline = joblib.load(self.settings.pipeline_path)
         self.metadata = joblib.load(self.settings.metadata_path) if self.settings.metadata_path.exists() else {}
         self.threshold = float(self.metadata.get("threshold", 0.5))
+        if self.settings.storage_backend == "minio" and not self.settings.keep_local_artifacts:
+            for path in {
+                *downloaded_paths,
+                self.settings.pipeline_path,
+                self.settings.metadata_path,
+            }:
+                path.unlink(missing_ok=True)
 
-    def _ensure_local_artifacts(self) -> None:
+    def _ensure_local_artifacts(self) -> list[Path]:
         """Ensure model artifacts are available locally, downloading from MinIO if needed."""
+        downloaded: list[Path] = []
         if not self.settings.pipeline_path.exists():
-            StorageSyncService(self.settings).download_artifact(
+            if StorageSyncService(self.settings).download_artifact(
                 self.settings.pipeline_object_key, self.settings.pipeline_path
-            )
+            ):
+                downloaded.append(self.settings.pipeline_path)
         if not self.settings.metadata_path.exists():
-            StorageSyncService(self.settings).download_artifact(
+            if StorageSyncService(self.settings).download_artifact(
                 self.settings.metadata_object_key, self.settings.metadata_path
-            )
+            ):
+                downloaded.append(self.settings.metadata_path)
         if not self.settings.pipeline_path.exists():
             raise FileNotFoundError(
                 f"Pipeline nao encontrada em {self.settings.pipeline_path}. Execute python main.py primeiro."
             )
+        return downloaded
 
     def predict_frame(self, records: pd.DataFrame) -> pd.DataFrame:
         """Predict fraud scores and labels for a dataframe."""

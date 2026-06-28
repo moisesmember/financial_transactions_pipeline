@@ -2,6 +2,10 @@
 
 Projeto Python modular para treino, avaliação, ajuste de threshold e serving de um modelo de detecção de fraude usando o dataset do Kaggle "Financial Transactions Dataset: Analytics".
 
+A seleção principal usa Optuna para comparar famílias e hiperparâmetros sklearn
+somente com treino e validação temporal. AutoGluon, H2O AutoML e FLAML podem ser
+executados como benchmarks externos nos mesmos splits e custos operacionais.
+
 Fonte de referência: https://www.kaggle.com/datasets/computingvictor/transactions-fraud-datasets
 
 ## Estrutura
@@ -78,7 +82,10 @@ O código é tolerante a pequenas variações de nomes de colunas, mas espera um
 
 ## Storage local ou MinIO
 
-Por padrão, o projeto usa arquivos locais em `data/raw` e salva artefatos em `artifacts`.
+O projeto usa o MinIO como armazenamento definitivo para dados raw, modelos,
+históricos, baselines, auditorias e resultados dos benchmarks. Os diretórios
+locais são usados somente como staging durante a execução e removidos após o
+upload ser confirmado.
 
 Para usar MinIO como object store:
 
@@ -94,6 +101,8 @@ MINIO_BUCKET=fraud-detection
 MINIO_SECURE=false
 RAW_DATA_PREFIX=data/raw
 ARTIFACTS_PREFIX=artifacts
+KEEP_LOCAL_RAW_DATA=false
+KEEP_LOCAL_ARTIFACTS=false
 ```
 
 3. Suba o MinIO local:
@@ -114,18 +123,89 @@ http://localhost:9001
 python -m scripts.import_kaggle_data
 ```
 
-5. Treine lendo os dados do MinIO e salvando os artefatos também no bucket:
+Para migrar dados e artefatos que já existam localmente, execute uma vez:
+
+```bash
+python -m scripts.migrate_local_storage_to_minio
+```
+
+A limpeza local só ocorre após todos os objetos serem confirmados no bucket.
+Se qualquer upload falhar, os arquivos locais são preservados.
+
+5. Treine lendo os dados do MinIO e salvando os artefatos no bucket:
 
 ```bash
 python main.py
 ```
 
-Quando `STORAGE_BACKEND=minio`, a API e o serviço de predição tentam baixar `artifacts/fraud_pipeline.joblib` e `artifacts/model_metadata.joblib` do bucket se eles ainda não existirem localmente.
+Os objetos ficam organizados pelos prefixos:
+
+- `data/raw/`: dataset original.
+- `artifacts/`: artefatos da execução mais recente.
+- `artifacts/history/<run_id>/`: histórico imutável de cada treino.
+- `artifacts/baseline/`: baseline oficial.
+- `artifacts/external_benchmarks/<run_id>/`: saídas de AutoGluon, H2O e FLAML.
+
+Quando `KEEP_LOCAL_ARTIFACTS=false`, a API baixa o pipeline e os metadados,
+carrega-os em memória e remove imediatamente as cópias locais.
+
+## MLflow
+
+O projeto pode registrar cada treinamento governado no MLflow, mantendo o
+historico proprio em `artifacts/history` e, quando habilitado, tambem o schema
+analitico `fraud_tracking` no PostgreSQL. A integracao e nao bloqueante: se o
+servidor MLflow estiver indisponivel, o treino continua e os artefatos locais
+sao preservados.
+
+Variaveis principais:
+
+```bash
+MLFLOW_TRACKING_ENABLED=true
+MLFLOW_TRACKING_URI=http://localhost:5000
+MLFLOW_EXPERIMENT_NAME=fraud-detection
+MLFLOW_ARTIFACT_LOCATION=
+MLFLOW_ARTIFACT_ROOT=s3://fraud-detection/mlflow
+MLFLOW_LOG_MODEL=true
+MLFLOW_REGISTER_MODEL=false
+MLFLOW_REGISTERED_MODEL_NAME=fraud-detection-model
+```
+
+Suba o tracking server local com PostgreSQL como backend store e MinIO como
+artifact store:
+
+```bash
+docker compose up -d postgres minio mlflow
+```
+
+UI do MLflow:
+
+```text
+http://localhost:5000
+```
+
+No Compose, `MLFLOW_ARTIFACT_ROOT=s3://fraud-detection/mlflow` fica no servidor
+MLflow. Deixe `MLFLOW_ARTIFACT_LOCATION` vazio no cliente para usar o proxy de
+artefatos do tracking server.
+
+Ao final do treino, o MLflow recebe:
+
+- parametros do modelo, selecao, threshold e versoes;
+- metricas de validacao, teste, out-of-time, custos e volumes dos splits;
+- tags com `run_id`, status, auditoria e decisao de baseline;
+- todos os artefatos governados em `governance/`;
+- opcionalmente o modelo sklearn em formato MLflow em `model/`.
+
+Para usar apenas os artefatos/historico locais, configure:
+
+```bash
+MLFLOW_TRACKING_ENABLED=false
+```
 
 ## PostgreSQL
 
 O Docker Compose inclui um PostgreSQL preparado para armazenar futuramente os
-metadados de experimentos do MLflow. Configure no `.env`:
+metadados estruturados do projeto e o backend store do MLflow. Configure no
+`.env`:
 
 ```bash
 POSTGRES_DB=mlflow
@@ -164,7 +244,7 @@ no mesmo banco.
 Instale as dependências e suba o PostgreSQL:
 
 ```bash
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 docker compose up -d postgres
 ```
 
@@ -189,12 +269,20 @@ python -m scripts.migrate_database downgrade
 O schema contém:
 
 - `training_runs`: configuração, período, volumes, auditoria e metadata completa.
-- `run_metrics`: métricas consolidadas de validação e teste.
-- `threshold_evaluations`: TP, FP, TN, FN e custo por threshold.
+- `run_metrics`: métricas de validação, teste e out-of-time.
+- `threshold_evaluations`: TP, FP, TN, FN e custo por threshold/cenário.
 - `run_artifacts`: localização e hash dos artefatos.
 - `baseline_promotions`: histórico de modelos promovidos.
+- `leakage_audit_checks`: checks individualizados e suas severidades.
+- `model_features`: coeficientes/importâncias e classificação das features.
+- `robustness_experiments`: resultados das ablações geográficas A-D.
+- `model_search_trials`: trials, parâmetros e métricas da seleção Optuna.
+- `external_benchmark_results`: leaderboard normalizado de AutoGluon, H2O,
+  FLAML e do vencedor sklearn.
+- `model_predictions`, `operational_feedback` e `drift_metrics`: base para
+  monitoramento pós-produção.
 - `fact_model_runs`: view fato com uma linha por treino, métricas de validação
-  e teste, custos, auditoria, thresholds, artefatos, baseline e rankings.
+  teste e OOT, custos, auditoria, versões, thresholds, baseline e rankings.
 
 Por padrão, a conexão utilizada pelas migrations é:
 
@@ -210,9 +298,10 @@ Após salvar o histórico local, o pipeline tenta gravar automaticamente no
 PostgreSQL:
 
 - Uma linha em `training_runs`.
-- Métricas de validação e teste em `run_metrics`.
+- Métricas de validação, teste e out-of-time em `run_metrics`.
 - Toda a grade de thresholds em `threshold_evaluations`.
 - Caminhos, tamanhos e hashes em `run_artifacts`.
+- Checks da auditoria e importâncias das features em tabelas próprias.
 
 A operação é transacional e idempotente pelo `run_id`. Se o PostgreSQL estiver
 indisponível ou as migrations ainda não tiverem sido aplicadas, o treinamento
@@ -252,12 +341,12 @@ nas colunas JSONB `threshold_evaluations`, `artifacts` e
 
 ## Princípios de modelagem
 
-- Split temporal em treino, validação e teste.
-- Nenhum `fit` em validação ou teste.
+- Split temporal em treino, validação, teste e out-of-time.
+- Nenhum `fit` em validação, teste ou out-of-time.
 - Nenhum ID cru usado como feature.
 - Features históricas calculadas com `shift`, sem usar a própria transação nem dados futuros.
 - Métrica principal orientada a fraude: PR-AUC, recall, precision, F1 e F-beta.
-- Threshold escolhido na validação e aplicado no teste.
+- Threshold escolhido na validação e aplicado sem ajuste no teste e OOT.
 - Pipeline completa salva com limpeza, engenharia de features, `ColumnTransformer` e modelo.
 
 ## Como executar
@@ -278,14 +367,39 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-Instale as dependências e execute o projeto:
+Instale as dependências em ordem. Primeiro instale ou atualize a base do
+projeto; esse arquivo contém os limites de versão compatíveis com o pipeline e
+com os benchmarks:
 
 ```bash
-pip install -r requirements.txt
+pip install -U -r requirements.txt
+```
+
+Depois, instale os modelos opcionais usados pelo Optuna (`xgboost`, `lightgbm`
+e `catboost`) quando quiser incluí-los na busca:
+
+```bash
+pip install -r requirements-models.txt
+```
+
+Por fim, instale os benchmarks externos (`AutoGluon`, `H2O` e `FLAML`). Deixe
+esta etapa por último porque esses pacotes têm restrições próprias de versões:
+
+```bash
+pip install -U -r requirements-benchmarks.txt
+```
+
+Execute o projeto:
+
+```bash
 python main.py
 pytest
 uvicorn src.api.app:app --reload
 ```
+
+AutoGluon e H2O são recomendados em Linux/WSL; H2O também requer uma JVM
+compatível. Uma dependência ausente é registrada como `unavailable` e não
+interrompe o treino principal.
 
 Por padrão, `python main.py` limita a `500000` as transações usadas no merge e
 no treino, evitando esgotar a memória nas etapas mais pesadas em ambientes
@@ -308,21 +422,133 @@ adequado para treinamento local com scikit-learn.
 
 Cada treinamento gera:
 
-- `artifacts/threshold_analysis.csv`: TP, FP, TN, FN, precision, recall,
-  F-beta e custo para thresholds entre `0.08` e `0.30`, nos splits de validação
-  e teste.
+- `artifacts/target_audit.json`, `target_audit.md`,
+  `target_audit_by_split.csv` e `target_audit_by_period.csv`: auditoria de
+  labels, cobertura temporal, duplicidades e risco de tratar transações sem
+  label como negativas.
+- `artifacts/data_drift_report.json`, `data_drift_report.md`,
+  `data_drift_numeric.csv` e `data_drift_categorical.csv`: comparação de
+  distribuição entre treino, validação, teste e out-of-time, com PSI/KS quando
+  aplicável.
+- `artifacts/robustness_report.json`, `robustness_report.md`,
+  `geo_ablation_report.json` e `geo_ablation_report.md`: experimentos de
+  robustez e ablação geográfica, incluindo variantes sem coordenadas, sem
+  cidade/estado, sem todas as features geográficas e baseline interpretável.
+- `artifacts/walk_forward_report.json` e `walk_forward_report.md`: validação
+  temporal expansiva quando `WALK_FORWARD_ENABLED=true`; caso contrário o
+  relatório registra explicitamente `disabled`.
+- `artifacts/model_review_report.md`: relatório consolidado para revisão humana
+  com decisão, métricas, auditorias, drift, threshold e próximos passos.
+- `artifacts/threshold_recommendations.json`: recomendações complementares de
+  threshold, mantendo a seleção operacional baseada apenas na validação.
+- `artifacts/optuna_trials.csv`: parâmetros, PR-AUC, threshold, custo e estado
+  de todos os trials.
+- `artifacts/optuna_study.json`: vencedor, parâmetros, seed e objetivo da busca.
+- `artifacts/external_benchmark_results.csv`: comparação do vencedor sklearn
+  com AutoGluon, H2O e FLAML em validação, teste e OOT.
+- `artifacts/external_benchmark_summary.json`: status, duração e modelo líder
+  de cada framework.
+- `artifacts/threshold_analysis.csv`: grade principal entre `0.05` e `0.80`
+  para validação, teste e OOT.
+- `artifacts/threshold_cost_scenarios.csv`: melhores pontos para os cenários
+  `1:10`, `1:25`, `1:50` e `5:25`.
 - `artifacts/leakage_audit.json`: checks temporais, features de risco e alerta
   para ROC-AUC anormalmente alta.
+- `artifacts/feature_importance.csv`: coeficientes, odds ratio, direção e grupo.
+- `artifacts/calibration_report.csv`, `score_deciles.csv`,
+  `calibration_metrics.json` e `calibration_curve.png`: calibração dos scores.
+- `artifacts/out_of_time_metrics.json`: avaliação da janela futura intocada.
+- `artifacts/model_card.md`: documentação automática da execução.
+- `artifacts/baseline_decision.json`: decisão `promote`, `keep_candidate` ou
+  `reject`, com os motivos.
+- `artifacts/manifest.json`: hashes e tamanhos dos artefatos obrigatórios.
 - `artifacts/model_metadata.joblib`: métricas e configuração operacional.
 - `artifacts/history/<run_id>/`: cópia imutável dos metadados, auditoria,
   thresholds e pipeline daquela execução.
 - `artifacts/history/runs.csv`: índice consolidado para comparar todos os
   treinamentos.
 
-O threshold é escolhido somente na validação. O split de teste é usado para
-confirmar o resultado e não deve ser usado para escolher o threshold.
-Quando o menor custo estiver em `0.08` ou `0.30`, a auditoria recomenda ampliar
-a faixa antes de aprovar o ponto operacional.
+### Política de decisão
+
+A decisão final agora é uma das opções:
+
+- `reject`: falhou em gates bloqueantes, como recall out-of-time mínimo,
+  queda relativa de PR-AUC/recall, custo contra baseline, falha crítica de
+  auditoria ou evidências fortes de instabilidade.
+- `candidate`: passou nos gates automáticos, mas ainda não foi solicitado
+  promover para produção.
+- `pending_review`: não há bloqueio automático, mas existem warnings sem
+  justificativa, drift, auditoria pendente ou revisão humana obrigatória.
+- `approved`: aprovado pela política e elegível para promoção quando
+  `PROMOTE_BASELINE=true`.
+
+A pipeline pode rejeitar automaticamente. Promoção para produção continua
+dependendo de política explícita e não ocorre quando há warnings não
+justificados, instabilidade temporal relevante ou queda ruim em teste/OOT.
+
+O threshold é escolhido somente na validação. Teste e OOT confirmam desempenho,
+estabilidade temporal, custo e capacidade operacional. Um threshold no limite
+da grade bloqueia a promoção automática.
+
+### Seleção de modelo com Optuna
+
+Por padrão, Optuna compara `logistic_regression`, `random_forest` e
+`hist_gradient_boosting`. Também há suporte opcional a `xgboost`, `lightgbm`
+e `catboost`. Instale `requirements-models.txt`, conforme a sequência da seção
+`Como executar`, antes de incluí-los na busca.
+
+O objetivo é maximizar PR-AUC na validação temporal.
+Cada trial também registra precision, recall, alert rate, custo e o threshold
+de menor custo. Teste e OOT nunca participam da busca.
+
+```bash
+MODEL_SELECTION_ENGINE=optuna
+OPTUNA_MODEL_CANDIDATES=logistic_regression,random_forest,hist_gradient_boosting,lightgbm,catboost,xgboost
+OPTUNA_TRIALS=15
+OPTUNA_TIMEOUT_SECONDS=900
+OPTUNA_N_JOBS=1
+```
+
+Use `OPTUNA_N_JOBS=1` para maior reprodutibilidade e controle de memória. Uma
+dependência opcional ausente faz somente aquele candidato ser ignorado, com um
+aviso nos logs e registro no resumo do estudo. Para treinar somente o modelo
+configurado:
+
+```bash
+MODEL_SELECTION_ENGINE=fixed
+MODEL_NAME=logistic_regression
+```
+
+### Benchmarks externos
+
+```bash
+RUN_EXTERNAL_BENCHMARKS=false
+RUN_AUTOGLUON_BENCHMARK=false
+RUN_H2O_BENCHMARK=false
+RUN_FLAML_BENCHMARK=false
+EXTERNAL_BENCHMARK_BACKENDS=autogluon,h2o,flaml
+EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS=300
+EXTERNAL_BENCHMARK_MAX_MODELS=10
+```
+
+Os benchmarks recebem as mesmas features governadas e usam somente
+treino/validação para ajuste. O threshold é selecionado na validação e aplicado
+em teste/OOT. Os resultados são comparativos: um benchmark externo não é
+promovido automaticamente nem substitui `fraud_pipeline.joblib`.
+
+Por padrão eles ficam desativados para preservar o treinamento principal. Para
+rodar somente H2O, por exemplo:
+
+```bash
+RUN_EXTERNAL_BENCHMARKS=true
+RUN_AUTOGLUON_BENCHMARK=false
+RUN_H2O_BENCHMARK=true
+RUN_FLAML_BENCHMARK=false
+```
+
+Falhas, dependências ausentes e interrupções de benchmarks externos são
+registradas como `WARNING` e no `external_benchmark_summary.json`; os artefatos
+governados, a persistência no PostgreSQL e a sincronização com MinIO continuam.
 
 Configure os custos relativos no `.env`:
 
@@ -330,9 +556,11 @@ Configure os custos relativos no `.env`:
 THRESHOLD_SELECTION_STRATEGY=business_cost
 FALSE_POSITIVE_COST=1
 FALSE_NEGATIVE_COST=25
-THRESHOLD_ANALYSIS_START=0.08
-THRESHOLD_ANALYSIS_STOP=0.30
+THRESHOLD_ANALYSIS_START=0.05
+THRESHOLD_ANALYSIS_STOP=0.80
 THRESHOLD_ANALYSIS_STEP=0.01
+THRESHOLD_COST_SCENARIOS=1:10,1:25,1:50,5:25
+OUT_OF_TIME_SIZE=0.10
 ```
 
 Os valores representam custos relativos e devem refletir o negócio. Por
@@ -368,8 +596,31 @@ Por padrão, cada run mantém uma cópia do pipeline para reprodução e promoç
 Use `TRAINING_HISTORY_SAVE_PIPELINE=false` apenas para economizar storage,
 aceitando que o modelo histórico não poderá ser restaurado diretamente.
 
-Também é possível promover ao final do treino com `PROMOTE_BASELINE=true`.
-Use `BASELINE_OVERWRITE=true` somente quando a substituição tiver sido aprovada.
+Também é possível solicitar promoção ao final do treino com
+`PROMOTE_BASELINE=true`. A promoção só ocorre quando a política retorna
+`promote`; `keep_candidate` e `reject` são bloqueados. Se o PostgreSQL falhar, a
+alteração local é revertida para evitar registries divergentes.
+
+Gates configuráveis:
+
+```bash
+PROMOTION_MIN_RECALL=0.90
+PROMOTION_MAX_ALERT_RATE=0.025
+PROMOTION_MAX_OOT_PR_AUC_DROP=0.15
+PROMOTION_MAX_COST_INCREASE=0.05
+BASELINE_WARNING_JUSTIFICATION=
+```
+
+Para executar as ablações geográficas e os experimentos de robustez, habilite
+`RUN_GEO_ABLATION=true`. Esse modo treina variantes adicionais e aumenta
+consideravelmente tempo e memória.
+
+Para executar validação temporal walk-forward:
+
+```bash
+WALK_FORWARD_ENABLED=true
+WALK_FORWARD_FOLDS=4
+```
 
 Uma auditoria com status `warning` não comprova vazamento, mas exige revisão.
 Neste dataset, atributos de snapshot como `card_on_dark_web`, `credit_score` e
@@ -386,7 +637,7 @@ dessas features no momento real da predição.
 Com o ambiente virtual ativado, instale as dependências do projeto:
 
 ```bash
-pip install -r requirements.txt
+pip install -U -r requirements.txt
 ```
 
 Inicie o JupyterLab na raiz do projeto:
@@ -418,6 +669,88 @@ Depois de treinar:
 ```bash
 uvicorn src.api.app:app --reload
 ```
+
+A documentação Swagger fica disponível em `http://localhost:8000/docs`.
+
+Para iniciar um treinamento governado pela API:
+
+```bash
+curl -X POST "http://localhost:8000/training-runs" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "THRESHOLD_SELECTION_STRATEGY": "business_cost",
+    "THRESHOLD_ANALYSIS_START": 0.05,
+    "THRESHOLD_ANALYSIS_STOP": 0.80,
+    "THRESHOLD_ANALYSIS_STEP": 0.01,
+    "FALSE_POSITIVE_COST": 1,
+    "FALSE_NEGATIVE_COST": 25,
+    "THRESHOLD_COST_SCENARIOS": "1:10,1:25,1:50,5:25",
+    "OUT_OF_TIME_SIZE": 0.10,
+    "LEAKAGE_ROC_AUC_WARNING": 0.99,
+    "STRICT_LEAKAGE_PREVENTION": true,
+    "PROMOTE_BASELINE": false,
+    "BASELINE_OVERWRITE": false,
+    "RUN_GEO_ABLATION": false,
+    "TRAINING_HISTORY_SAVE_PIPELINE": true,
+    "TRAINING_MAX_ROWS": 500000,
+    "BASELINE_WARNING_JUSTIFICATION": "",
+    "PROMOTION_MIN_RECALL": 0.90,
+    "PROMOTION_MAX_ALERT_RATE": 0.025,
+    "PROMOTION_MAX_OOT_PR_AUC_DROP": 0.15,
+    "PROMOTION_MAX_COST_INCREASE": 0.05
+  }'
+```
+
+A rota retorna `202 Accepted` e um `job_id`. Consulte o andamento:
+
+```bash
+curl "http://localhost:8000/training-runs/JOB_ID"
+```
+
+Todos os campos do body são opcionais. Campos ausentes ou `null` mantêm os
+valores resolvidos do `.env`; `TRAINING_MAX_ROWS=0` processa o dataset completo.
+Os nomes também podem ser enviados em `snake_case`. Apenas um treinamento pode
+executar por processo da API. Cada job usa staging isolado em
+`.runtime/training/<job_id>` para não disputar arquivos com a inferência. Em
+produção, proteja essa rota com autenticação e execute a API com um único worker
+ou substitua o gerenciador em memória por uma fila distribuída.
+
+Para consultar um relatório transparente de um treinamento concluído:
+
+```bash
+curl "http://localhost:8000/training-runs/RUN_ID/report?feature_limit=50"
+```
+
+O report consolida:
+
+- resumo executivo e decisão de baseline;
+- modelo selecionado, parâmetros, ranking e famílias consideradas;
+- tamanho e taxa positiva dos splits temporais;
+- precision, recall, F1, F-beta, PR-AUC, ROC-AUC, matriz de confusão,
+  alert rate e custo de negócio;
+- degradação entre validação, teste e out-of-time;
+- features utilizadas, pesos/importâncias, direção e grupo;
+- features desconsideradas, política de exclusão e colunas de risco;
+- checks, warnings, falhas e recomendações da auditoria de leakage;
+- trials do Optuna, benchmarks externos e experimentos de robustez;
+- análise de thresholds, artefatos e histórico de promoção.
+
+Use `feature_limit` entre 1 e 500 para controlar quantas features ordenadas por
+importância são retornadas. A importância é interna ao modelo e não representa
+causalidade. Runs antigos podem não possuir a lista exata de colunas excluídas;
+nesse caso, a resposta marca `legacy_run_policy_only` e apresenta a política que
+foi aplicada.
+
+Para exportar em JSON todas as colunas da view
+`fraud_tracking.fact_model_runs`:
+
+```bash
+curl "http://localhost:8000/model-runs/export?limit=100&offset=0"
+```
+
+A resposta contém `total`, `count`, os dados de paginação e `items`. Cada item
+representa um treino e preserva os blocos JSON de thresholds, artefatos,
+auditoria e promoções de baseline. O limite máximo por requisição é 1000.
 
 Exemplo de request:
 

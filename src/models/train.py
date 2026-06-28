@@ -22,14 +22,20 @@ class FraudModelTrainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def build_pipeline(self, X_train: pd.DataFrame) -> Pipeline:
+    def build_pipeline(
+        self,
+        X_train: pd.DataFrame,
+        model_name: str | None = None,
+        model_params: dict | None = None,
+    ) -> Pipeline:
         """Create cleaning, feature, preprocessing and model pipeline."""
         cleaner = FraudDataCleaner(self.settings)
         feature_engineer = FraudFeatureEngineer(self.settings)
         sample = cleaner.fit_transform(X_train)
         sample = feature_engineer.fit_transform(sample)
-        preprocessor = build_preprocessor(sample, self.settings)
-        model = ModelFactory(self.settings).create()
+        selected_model = model_name or self.settings.model_name
+        preprocessor = build_preprocessor(sample, self.settings, model_name=selected_model)
+        model = ModelFactory(self.settings).create(model_name=model_name, params=model_params)
 
         return Pipeline(
             steps=[
@@ -40,9 +46,20 @@ class FraudModelTrainer:
             ]
         )
 
-    def train(self, X_train: pd.DataFrame, y_train: pd.Series) -> Pipeline:
+    def train(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        model_name: str | None = None,
+        model_params: dict | None = None,
+    ) -> Pipeline:
         """Fit and return the complete fraud detection pipeline."""
-        pipeline = self.build_pipeline(X_train)
-        logger.info("Treinando modelo %s com %s linhas", self.settings.model_name, len(X_train))
+        selected_model = model_name or self.settings.model_name
+        pipeline = self.build_pipeline(
+            X_train,
+            model_name=selected_model,
+            model_params=model_params,
+        )
+        logger.info("Treinando modelo %s com %s linhas", selected_model, len(X_train))
         pipeline.fit(X_train, y_train)
         return pipeline

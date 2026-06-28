@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Benchmarks externos opcionais. AutoGluon e H2O funcionam melhor em Linux/WSL.
+autogluon.tabular>=1.5.0,<2.0
+h2o>=3.46.0,<4.0
+flaml[automl]>=2.3.0,<3.0

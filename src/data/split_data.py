@@ -18,6 +18,7 @@ class DataSplits:
     validation: pd.DataFrame
     test: pd.DataFrame
     time_column: str
+    out_of_time: pd.DataFrame | None = None
 
 
 class TemporalSplitter:
@@ -38,17 +39,38 @@ class TemporalSplitter:
         if len(ordered) < 10:
             raise ValueError("Dataset muito pequeno para split temporal.")
 
-        test_start = int(len(ordered) * (1 - self.settings.test_size))
-        validation_start = int(len(ordered) * (1 - self.settings.test_size - self.settings.validation_size))
+        out_of_time_start = int(len(ordered) * (1 - self.settings.out_of_time_size))
+        test_start = int(
+            len(ordered) * (1 - self.settings.out_of_time_size - self.settings.test_size)
+        )
+        validation_start = int(
+            len(ordered)
+            * (
+                1
+                - self.settings.out_of_time_size
+                - self.settings.test_size
+                - self.settings.validation_size
+            )
+        )
         validation_boundary = ordered.iloc[validation_start][time_col]
         test_boundary = ordered.iloc[test_start][time_col]
+        out_of_time_boundary = ordered.iloc[out_of_time_start][time_col]
         train = ordered.loc[ordered[time_col] < validation_boundary].copy()
         validation = ordered.loc[
             ordered[time_col].ge(validation_boundary) & ordered[time_col].lt(test_boundary)
         ].copy()
-        test = ordered.loc[ordered[time_col].ge(test_boundary)].copy()
+        test = ordered.loc[
+            ordered[time_col].ge(test_boundary) & ordered[time_col].lt(out_of_time_boundary)
+        ].copy()
+        out_of_time = ordered.loc[ordered[time_col].ge(out_of_time_boundary)].copy()
 
-        if train.empty or validation.empty or test.empty:
+        if train.empty or validation.empty or test.empty or out_of_time.empty:
             raise ValueError("Split temporal gerou particao vazia; ajuste validation_size/test_size.")
 
-        return DataSplits(train=train, validation=validation, test=test, time_column=time_col)
+        return DataSplits(
+            train=train,
+            validation=validation,
+            test=test,
+            time_column=time_col,
+            out_of_time=out_of_time,
+        )

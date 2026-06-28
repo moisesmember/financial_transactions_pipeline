@@ -4,12 +4,26 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from sklearn import config_context
 
 from src.config.settings import Settings
+from src.features.preprocessing import build_preprocessor
 from src.models.evaluate import evaluate_binary_classifier
 from src.models.model_factory import ModelFactory
+from src.models.external_benchmarks import (
+    BenchmarkDataset,
+    BenchmarkFitResult,
+    ExternalBenchmarkAdapter,
+    ExternalBenchmarkRunner,
+)
+from src.models.optuna_search import OptunaModelSelector
 from src.models.threshold import find_best_threshold
-from src.models.threshold_analysis import build_threshold_table, select_business_threshold, threshold_grid
+from src.models.threshold_analysis import (
+    build_cost_scenario_summary,
+    build_threshold_table,
+    select_business_threshold,
+    threshold_grid,
+)
 from src.models.train import FraudModelTrainer
 
 
@@ -18,6 +32,32 @@ def test_model_factory_creates_supported_model() -> None:
     model = ModelFactory(Settings()).create("logistic_regression")
 
     assert hasattr(model, "fit")
+
+
+def test_model_factory_applies_parameter_overrides() -> None:
+    model = ModelFactory(Settings()).create(
+        "logistic_regression",
+        params={"C": 0.25},
+    )
+
+    assert model.C == 0.25
+
+
+def test_settings_accept_optional_optuna_models() -> None:
+    settings = Settings(
+        optuna_model_candidates=("xgboost", "lightgbm", "catboost"),
+    )
+
+    assert set(settings.optuna_model_candidates) == {"xgboost", "lightgbm", "catboost"}
+
+
+def test_model_factory_reports_unavailable_optional_models(monkeypatch) -> None:
+    strategy = ModelFactory._strategies["catboost"]
+    monkeypatch.setattr(strategy, "is_available", lambda: False)
+
+    assert ModelFactory.unavailable_model_names(("logistic_regression", "catboost")) == (
+        "catboost",
+    )
 
 
 def test_threshold_optimizes_fbeta() -> None:
@@ -68,6 +108,26 @@ def test_threshold_grid_includes_requested_endpoints() -> None:
     assert grid[-1] == 0.30
 
 
+def test_cost_scenarios_select_threshold_on_validation_for_every_split() -> None:
+    y_true = np.array([0, 0, 1, 1])
+    scores = np.array([0.05, 0.20, 0.60, 0.90])
+
+    summary = build_cost_scenario_summary(
+        {
+            "validation": (y_true, scores),
+            "test": (y_true, scores),
+            "out_of_time": (y_true, scores),
+        },
+        thresholds=np.array([0.10, 0.50]),
+        beta=2.0,
+        cost_scenarios=((1.0, 10.0), (5.0, 25.0)),
+    )
+
+    assert len(summary) == 6
+    assert set(summary["split"]) == {"validation", "test", "out_of_time"}
+    assert set(summary["scenario_name"]) == {"fp_1_fn_10", "fp_5_fn_25"}
+
+
 def test_training_pipeline_can_fit_small_dataframe() -> None:
     """Trainer should fit the complete sklearn pipeline on tabular data."""
     settings = Settings(model_name="logistic_regression")
@@ -88,3 +148,162 @@ def test_training_pipeline_can_fit_small_dataframe() -> None:
 
     assert len(scores) == len(frame)
     assert np.all((scores >= 0.0) & (scores <= 1.0))
+
+
+def test_hist_gradient_boosting_uses_dense_compatible_preprocessing() -> None:
+    settings = Settings(model_name="hist_gradient_boosting")
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=20, freq="D"),
+            "card_id": [index % 4 for index in range(20)],
+            "amount": [float(index) for index in range(20)],
+            "merchant_state": ["SP", "RJ"] * 10,
+        }
+    )
+    target = pd.Series([0, 1] * 10)
+
+    pipeline = FraudModelTrainer(settings).train(frame, target)
+
+    assert len(pipeline.predict_proba(frame)) == len(frame)
+
+
+def test_preprocessor_uses_default_output_even_with_global_pandas_config() -> None:
+    settings = Settings(model_name="lightgbm")
+    frame = pd.DataFrame(
+        {
+            "amount": [10.0, 20.0, 30.0],
+            "merchant_state": ["SP", "RJ", "SP"],
+        }
+    )
+
+    with config_context(transform_output="pandas"):
+        transformed = build_preprocessor(
+            frame,
+            settings,
+            model_name="lightgbm",
+        ).fit_transform(frame)
+
+    assert not isinstance(transformed, pd.DataFrame)
+
+
+def test_external_benchmarks_record_unavailable_dependencies(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        project_root=tmp_path,
+        external_benchmark_backends=("autogluon", "h2o", "flaml"),
+        run_autogluon_benchmark=True,
+        run_h2o_benchmark=True,
+        run_flaml_benchmark=True,
+    )
+    runner = ExternalBenchmarkRunner(settings)
+    for adapter_type in runner._adapters.values():
+        monkeypatch.setattr(adapter_type, "is_available", lambda self: False)
+
+    summary = runner.run(
+        dataset=None,
+        results_path=tmp_path / "results.csv",
+        summary_path=tmp_path / "summary.json",
+        output_dir=tmp_path / "output",
+    )
+
+    assert {item["backend"] for item in summary} == {"autogluon", "h2o", "flaml"}
+    assert {item["status"] for item in summary} == {"unavailable"}
+
+
+def test_settings_resolve_external_benchmark_flags(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("RUN_EXTERNAL_BENCHMARKS", "true")
+    monkeypatch.setenv("RUN_AUTOGLUON_BENCHMARK", "false")
+    monkeypatch.setenv("RUN_H2O_BENCHMARK", "true")
+    monkeypatch.setenv("RUN_FLAML_BENCHMARK", "false")
+
+    settings = Settings(project_root=tmp_path)
+
+    assert settings.external_benchmarks_enabled is True
+    assert settings.enabled_external_benchmark_backends == ("h2o",)
+
+
+def test_external_benchmark_keyboard_interrupt_is_recorded(tmp_path, monkeypatch) -> None:
+    class InterruptingAdapter(ExternalBenchmarkAdapter):
+        name = "autogluon"
+        import_name = "autogluon"
+
+        def is_available(self) -> bool:
+            return True
+
+        def fit(
+            self,
+            dataset: BenchmarkDataset,
+            settings: Settings,
+            output_dir,
+        ) -> BenchmarkFitResult:
+            raise KeyboardInterrupt
+
+        def predict_scores(self, fitted: BenchmarkFitResult, X: pd.DataFrame) -> np.ndarray:
+            raise AssertionError("predict_scores should not run after interrupted fit")
+
+    monkeypatch.setitem(
+        ExternalBenchmarkRunner._adapters,
+        "autogluon",
+        InterruptingAdapter,
+    )
+    settings = Settings(
+        project_root=tmp_path,
+        external_benchmark_backends=("autogluon",),
+        run_autogluon_benchmark=True,
+        external_benchmark_fail_fast=True,
+    )
+
+    summary = ExternalBenchmarkRunner(settings).run(
+        dataset=None,
+        results_path=tmp_path / "results.csv",
+        summary_path=tmp_path / "summary.json",
+        output_dir=tmp_path / "output",
+    )
+
+    assert summary[0]["backend"] == "autogluon"
+    assert summary[0]["status"] == "interrupted"
+    assert pd.read_csv(tmp_path / "results.csv").empty
+
+
+def test_optuna_search_executes_each_supported_model_family(tmp_path) -> None:
+    row_count = 120
+    frame = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=row_count, freq="h"),
+            "card_id": [index % 8 for index in range(row_count)],
+            "amount": [100.0 if index % 10 == 0 else 10.0 + index % 5 for index in range(row_count)],
+            "merchant_state": ["SP", "RJ", "AM"] * 40,
+        }
+    )
+    target = pd.Series([1 if index % 10 == 0 else 0 for index in range(row_count)])
+    settings = Settings(
+        project_root=tmp_path,
+        optuna_model_candidates=(
+            "logistic_regression",
+            "random_forest",
+            "hist_gradient_boosting",
+        ),
+        optuna_trials=3,
+        optuna_timeout_seconds=60,
+        threshold_analysis_start=0.10,
+        threshold_analysis_stop=0.90,
+        threshold_analysis_step=0.20,
+        categorical_min_frequency=2,
+    )
+
+    result = OptunaModelSelector(settings).select(
+        frame.iloc[:80],
+        target.iloc[:80],
+        frame.iloc[80:],
+        target.iloc[80:],
+        trials_path=tmp_path / "trials.csv",
+        study_path=tmp_path / "study.json",
+    )
+    trials = pd.read_csv(tmp_path / "trials.csv")
+
+    assert set(trials["model_name"]) == {
+        "logistic_regression",
+        "random_forest",
+        "hist_gradient_boosting",
+    }
+    assert set(trials["state"]) == {"COMPLETE"}
+    assert result.model_name in set(trials["model_name"])
