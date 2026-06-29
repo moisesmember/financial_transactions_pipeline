@@ -99,6 +99,15 @@ class Settings:
         default_factory=lambda: _env_optional_positive_int("OPTUNA_TIMEOUT_SECONDS", 900)
     )
     optuna_n_jobs: int = field(default_factory=lambda: int(os.getenv("OPTUNA_N_JOBS", "1")))
+    optuna_selection_objective: str = field(
+        default_factory=lambda: os.getenv("OPTUNA_SELECTION_OBJECTIVE", "temporal_stability")
+    )
+    optuna_temporal_holdout_fraction: float = field(
+        default_factory=lambda: _env_float("OPTUNA_TEMPORAL_HOLDOUT_FRACTION", 0.20)
+    )
+    optuna_pr_auc_stability_penalty: float = field(
+        default_factory=lambda: _env_float("OPTUNA_PR_AUC_STABILITY_PENALTY", 0.50)
+    )
     external_benchmarks_enabled: bool = field(
         default_factory=lambda: _env_bool_alias(
             "RUN_EXTERNAL_BENCHMARKS",
@@ -181,6 +190,9 @@ class Settings:
     promotion_max_cost_increase: float = field(
         default_factory=lambda: _env_float("PROMOTION_MAX_COST_INCREASE", 0.05)
     )
+    promotion_min_oot_pr_auc_lift: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MIN_OOT_PR_AUC_LIFT", 1.0)
+    )
     dataset_version_override: str | None = field(default_factory=lambda: os.getenv("DATASET_VERSION"))
     feature_set_version: str = field(
         default_factory=lambda: os.getenv("FEATURE_SET_VERSION", "v1")
@@ -189,7 +201,19 @@ class Settings:
     run_geo_ablation: bool = field(default_factory=lambda: _env_bool("RUN_GEO_ABLATION", False))
     walk_forward_enabled: bool = field(default_factory=lambda: _env_bool("WALK_FORWARD_ENABLED", False))
     walk_forward_folds: int = field(default_factory=lambda: int(os.getenv("WALK_FORWARD_FOLDS", "4")))
-    feature_exclusions: tuple[str, ...] = ()
+    exclude_geographic_features: bool = field(
+        default_factory=lambda: _env_bool("EXCLUDE_GEOGRAPHIC_FEATURES", False)
+    )
+    feature_exclusions: tuple[str, ...] = field(
+        default_factory=lambda: _env_csv("FEATURE_EXCLUSIONS", ())
+    )
+    geographic_feature_exclusions: tuple[str, ...] = (
+        "zip",
+        "latitude",
+        "longitude",
+        "merchant_city",
+        "merchant_state",
+    )
     categorical_min_frequency: int = field(
         default_factory=lambda: int(os.getenv("CATEGORICAL_MIN_FREQUENCY", "10"))
     )
@@ -343,6 +367,19 @@ class Settings:
             "external_benchmark_backends",
             tuple(backend.strip().lower() for backend in self.external_benchmark_backends),
         )
+        exclusions = tuple(
+            item.strip().lower()
+            for item in self.feature_exclusions
+            if item and item.strip()
+        )
+        if self.exclude_geographic_features:
+            exclusions = tuple(sorted(set(exclusions) | set(self.geographic_feature_exclusions)))
+        object.__setattr__(self, "feature_exclusions", exclusions)
+        object.__setattr__(
+            self,
+            "optuna_selection_objective",
+            self.optuna_selection_objective.strip().lower(),
+        )
         if self.mlflow_tracking_uri is None or not self.mlflow_tracking_uri.strip():
             object.__setattr__(
                 self,
@@ -392,6 +429,14 @@ class Settings:
             raise ValueError("OPTUNA_TRIALS deve ser positivo.")
         if self.optuna_n_jobs == 0:
             raise ValueError("OPTUNA_N_JOBS nao pode ser zero.")
+        if self.optuna_selection_objective not in {"validation_pr_auc", "temporal_stability"}:
+            raise ValueError(
+                "OPTUNA_SELECTION_OBJECTIVE deve ser 'validation_pr_auc' ou 'temporal_stability'."
+            )
+        if not 0 < self.optuna_temporal_holdout_fraction < 0.5:
+            raise ValueError("OPTUNA_TEMPORAL_HOLDOUT_FRACTION deve estar entre 0 e 0.5.")
+        if self.optuna_pr_auc_stability_penalty < 0:
+            raise ValueError("OPTUNA_PR_AUC_STABILITY_PENALTY nao pode ser negativo.")
         if self.external_benchmark_time_limit_seconds < 1:
             raise ValueError("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS deve ser positivo.")
         if self.external_benchmark_max_models < 1:
@@ -437,6 +482,8 @@ class Settings:
             raise ValueError("PROMOTION_MAX_OOT_PR_AUC_DROP deve estar entre 0 e 1.")
         if self.promotion_max_cost_increase < 0:
             raise ValueError("PROMOTION_MAX_COST_INCREASE nao pode ser negativo.")
+        if self.promotion_min_oot_pr_auc_lift < 0:
+            raise ValueError("PROMOTION_MIN_OOT_PR_AUC_LIFT nao pode ser negativo.")
         object.__setattr__(self, "threshold_selection_strategy", strategy)
 
     @property

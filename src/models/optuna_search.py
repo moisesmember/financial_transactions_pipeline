@@ -33,7 +33,7 @@ class ModelSelectionResult:
 
 
 class OptunaModelSelector:
-    """Select model family and hyperparameters using validation PR-AUC only."""
+    """Select model family and hyperparameters with temporal stability controls."""
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -95,26 +95,52 @@ class OptunaModelSelector:
                 model_name,
                 positive_class_weight=self._positive_class_weight(y_train),
             )
-            pipeline = FraudModelTrainer(self.settings).train(
-                X_train,
-                y_train,
-                model_name=model_name,
-                model_params=params,
-            )
-            validation_scores = pipeline.predict_proba(X_validation)[:, 1]
-            pr_auc = float(
-                average_precision_score(y_validation.to_numpy(), validation_scores)
-            )
-            table = build_threshold_table(
-                y_validation.to_numpy(),
-                validation_scores,
-                thresholds=thresholds,
-                beta=self.settings.threshold_beta,
-                false_positive_cost=self.settings.false_positive_cost,
-                false_negative_cost=self.settings.false_negative_cost,
-                split="validation",
-            )
-            selected_threshold, metrics = select_business_threshold(table)
+            windows = self._selection_windows(X_train, y_train, X_validation, y_validation)
+            window_results = []
+            for window in windows:
+                pipeline = FraudModelTrainer(self.settings).train(
+                    window["X_train"],
+                    window["y_train"],
+                    model_name=model_name,
+                    model_params=params,
+                )
+                scores = pipeline.predict_proba(window["X_validation"])[:, 1]
+                pr_auc = float(
+                    average_precision_score(window["y_validation"].to_numpy(), scores)
+                )
+                table = build_threshold_table(
+                    window["y_validation"].to_numpy(),
+                    scores,
+                    thresholds=thresholds,
+                    beta=self.settings.threshold_beta,
+                    false_positive_cost=self.settings.false_positive_cost,
+                    false_negative_cost=self.settings.false_negative_cost,
+                    split="validation",
+                )
+                selected_threshold, metrics = select_business_threshold(table)
+                metrics["alert_rate"] = float(
+                    (metrics["tp"] + metrics["fp"])
+                    / max(1.0, metrics["tp"] + metrics["fp"] + metrics["tn"] + metrics["fn"])
+                )
+                window_results.append(
+                    {
+                        "name": window["name"],
+                        "pr_auc": pr_auc,
+                        "threshold": selected_threshold,
+                        "metrics": metrics,
+                    }
+                )
+            validation_result = window_results[-1]
+            pr_aucs = np.array([item["pr_auc"] for item in window_results], dtype=float)
+            pr_auc_range = float(pr_aucs.max() - pr_aucs.min()) if len(pr_aucs) else 0.0
+            mean_pr_auc = float(pr_aucs.mean()) if len(pr_aucs) else 0.0
+            stability_penalty = self.settings.optuna_pr_auc_stability_penalty * pr_auc_range
+            if self.settings.optuna_selection_objective == "temporal_stability":
+                objective_value = mean_pr_auc - stability_penalty
+            else:
+                objective_value = validation_result["pr_auc"]
+            selected_threshold = validation_result["threshold"]
+            metrics = validation_result["metrics"]
             trial.set_user_attr("selected_threshold", selected_threshold)
             trial.set_user_attr("precision", metrics["precision"])
             trial.set_user_attr("recall", metrics["recall"])
@@ -126,14 +152,40 @@ class OptunaModelSelector:
                 ),
             )
             trial.set_user_attr("business_cost", metrics["business_cost"])
+            trial.set_user_attr("validation_pr_auc", validation_result["pr_auc"])
+            trial.set_user_attr("mean_temporal_pr_auc", mean_pr_auc)
+            trial.set_user_attr("min_temporal_pr_auc", float(pr_aucs.min()))
+            trial.set_user_attr("max_temporal_pr_auc", float(pr_aucs.max()))
+            trial.set_user_attr("temporal_pr_auc_range", pr_auc_range)
+            trial.set_user_attr("stability_penalty", stability_penalty)
+            trial.set_user_attr(
+                "selection_windows",
+                json.dumps(
+                    [
+                        {
+                            "name": item["name"],
+                            "pr_auc": item["pr_auc"],
+                            "threshold": item["threshold"],
+                            "recall": item["metrics"]["recall"],
+                            "alert_rate": item["metrics"]["alert_rate"],
+                            "business_cost": item["metrics"]["business_cost"],
+                        }
+                        for item in window_results
+                    ],
+                    sort_keys=True,
+                ),
+            )
             logger.info(
-                "Optuna trial=%d | model=%s | validation_pr_auc=%.6f | threshold=%.4f",
+                "Optuna trial=%d | model=%s | objective=%s | score=%.6f | validation_pr_auc=%.6f | temporal_range=%.6f | threshold=%.4f",
                 trial.number,
                 model_name,
-                pr_auc,
+                self.settings.optuna_selection_objective,
+                objective_value,
+                validation_result["pr_auc"],
+                pr_auc_range,
                 selected_threshold,
             )
-            return pr_auc
+            return objective_value
 
         study.optimize(
             objective,
@@ -157,20 +209,26 @@ class OptunaModelSelector:
             model_name=best_model_name,
             model_params=best_params,
         )
+        best_validation_pr_auc = float(
+            study.best_trial.user_attrs.get("validation_pr_auc", study.best_value)
+        )
         self._write_trials(study, trials_path)
         study_path.write_text(
             json.dumps(
                 {
                     "study_name": study.study_name,
                     "direction": "maximize",
-                    "objective": "validation_pr_auc",
+                    "objective": self.settings.optuna_selection_objective,
                     "sampler": "TPESampler",
                     "seed": self.settings.random_state,
+                    "temporal_holdout_fraction": self.settings.optuna_temporal_holdout_fraction,
+                    "pr_auc_stability_penalty": self.settings.optuna_pr_auc_stability_penalty,
                     "configured_candidates": list(configured_candidates),
                     "available_candidates": list(available_candidates),
                     "unavailable_candidates": list(unavailable_candidates),
                     "best_trial_number": study.best_trial.number,
                     "best_value": float(study.best_value),
+                    "best_validation_pr_auc": best_validation_pr_auc,
                     "best_model_name": best_model_name,
                     "best_model_params": best_params,
                     "trial_count": len(study.trials),
@@ -184,9 +242,50 @@ class OptunaModelSelector:
             pipeline=pipeline,
             model_name=best_model_name,
             model_params=best_params,
-            validation_pr_auc=float(study.best_value),
+            validation_pr_auc=best_validation_pr_auc,
             trial_count=len(study.trials),
         )
+
+    def _selection_windows(
+        self,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_validation: pd.DataFrame,
+        y_validation: pd.Series,
+    ) -> list[dict[str, Any]]:
+        """Build temporal windows used for model selection without touching test/OOT."""
+        windows: list[dict[str, Any]] = []
+        if self.settings.optuna_selection_objective == "temporal_stability":
+            holdout_start = int(len(X_train) * (1 - self.settings.optuna_temporal_holdout_fraction))
+            fit_X = X_train.iloc[:holdout_start]
+            fit_y = y_train.iloc[:holdout_start]
+            holdout_X = X_train.iloc[holdout_start:]
+            holdout_y = y_train.iloc[holdout_start:]
+            if (
+                len(fit_X) >= 20
+                and len(holdout_X) >= 10
+                and fit_y.nunique() >= 2
+                and holdout_y.nunique() >= 2
+            ):
+                windows.append(
+                    {
+                        "name": "train_tail_holdout",
+                        "X_train": fit_X,
+                        "y_train": fit_y,
+                        "X_validation": holdout_X,
+                        "y_validation": holdout_y,
+                    }
+                )
+        windows.append(
+            {
+                "name": "validation",
+                "X_train": X_train,
+                "y_train": y_train,
+                "X_validation": X_validation,
+                "y_validation": y_validation,
+            }
+        )
+        return windows
 
     def _suggest_params(
         self,
@@ -403,7 +502,14 @@ class OptunaModelSelector:
                 {
                     "trial_number": trial.number,
                     "state": trial.state.name,
-                    "validation_pr_auc": trial.value,
+                    "selection_score": trial.value,
+                    "validation_pr_auc": trial.user_attrs.get("validation_pr_auc", trial.value),
+                    "mean_temporal_pr_auc": trial.user_attrs.get("mean_temporal_pr_auc"),
+                    "min_temporal_pr_auc": trial.user_attrs.get("min_temporal_pr_auc"),
+                    "max_temporal_pr_auc": trial.user_attrs.get("max_temporal_pr_auc"),
+                    "temporal_pr_auc_range": trial.user_attrs.get("temporal_pr_auc_range"),
+                    "stability_penalty": trial.user_attrs.get("stability_penalty"),
+                    "selection_windows": trial.user_attrs.get("selection_windows"),
                     "model_name": trial.params.get("model_name"),
                     "model_params": json.dumps(trial.params, sort_keys=True),
                     "selected_threshold": trial.user_attrs.get("selected_threshold"),

@@ -138,6 +138,11 @@ class TrainingJobManager:
             "run_geo_ablation",
             "walk_forward_enabled",
             "walk_forward_folds",
+            "exclude_geographic_features",
+            "feature_exclusions",
+            "optuna_selection_objective",
+            "optuna_temporal_holdout_fraction",
+            "optuna_pr_auc_stability_penalty",
             "training_history_save_pipeline",
             "mlflow_tracking_enabled",
             "mlflow_tracking_uri",
@@ -152,6 +157,7 @@ class TrainingJobManager:
             "promotion_max_alert_rate",
             "promotion_max_oot_pr_auc_drop",
             "promotion_max_cost_increase",
+            "promotion_min_oot_pr_auc_lift",
         )
         values = asdict(settings)
         return {name: values[name] for name in names}

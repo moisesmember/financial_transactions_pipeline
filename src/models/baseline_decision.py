@@ -63,6 +63,15 @@ class BaselineDecisionService:
                 blocking_reasons.append("Recall out-of-time abaixo do minimo operacional.")
             if float(oot["alert_rate"]) > self.settings.promotion_max_alert_rate:
                 blocking_reasons.append("Alert rate out-of-time acima da capacidade operacional.")
+            oot_positive_rate = (metadata.get("dataset") or {}).get("out_of_time_positive_rate")
+            if oot_positive_rate is not None:
+                random_pr_auc = float(oot_positive_rate)
+                minimum_pr_auc = random_pr_auc * self.settings.promotion_min_oot_pr_auc_lift
+                if oot_pr_auc <= minimum_pr_auc:
+                    blocking_reasons.append(
+                        "PR-AUC out-of-time nao supera o baseline aleatorio "
+                        f"exigido ({oot_pr_auc:.6f} <= {minimum_pr_auc:.6f})."
+                    )
             if abs(float(validation["recall"]) - float(test["recall"])) > 0.25:
                 warning_reasons.append("Instabilidade relevante de recall entre validacao e teste.")
 
@@ -127,6 +136,7 @@ class BaselineDecisionService:
                 "max_oot_alert_rate": self.settings.promotion_max_alert_rate,
                 "max_relative_oot_pr_auc_drop": self.settings.promotion_max_oot_pr_auc_drop,
                 "max_baseline_cost_increase": self.settings.promotion_max_cost_increase,
+                "min_oot_pr_auc_lift_over_random": self.settings.promotion_min_oot_pr_auc_lift,
                 "human_approval_required_for_warnings": True,
             },
             "metrics_summary": {

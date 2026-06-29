@@ -77,6 +77,11 @@ class TrainingRequest(BaseModel):
     run_geo_ablation: bool | None = None
     walk_forward_enabled: bool | None = None
     walk_forward_folds: int | None = Field(default=None, ge=2)
+    exclude_geographic_features: bool | None = None
+    feature_exclusions: tuple[str, ...] | None = None
+    optuna_selection_objective: Literal["validation_pr_auc", "temporal_stability"] | None = None
+    optuna_temporal_holdout_fraction: float | None = Field(default=None, gt=0.0, lt=0.5)
+    optuna_pr_auc_stability_penalty: float | None = Field(default=None, ge=0.0)
     training_history_save_pipeline: bool | None = None
     mlflow_tracking_enabled: bool | None = None
     mlflow_tracking_uri: str | None = None
@@ -91,6 +96,7 @@ class TrainingRequest(BaseModel):
     promotion_max_alert_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     promotion_max_oot_pr_auc_drop: float | None = Field(default=None, ge=0.0, le=1.0)
     promotion_max_cost_increase: float | None = Field(default=None, ge=0.0)
+    promotion_min_oot_pr_auc_lift: float | None = Field(default=None, ge=0.0)
 
     @field_validator("threshold_cost_scenarios", mode="before")
     @classmethod
@@ -108,6 +114,14 @@ class TrainingRequest(BaseModel):
                     "THRESHOLD_COST_SCENARIOS deve usar o formato `1:10,1:25`."
                 ) from exc
         return tuple(scenarios)
+
+    @field_validator("feature_exclusions", mode="before")
+    @classmethod
+    def parse_feature_exclusions(cls, value: Any) -> Any:
+        """Accept .env-style comma-separated feature exclusions."""
+        if value is None or not isinstance(value, str):
+            return value
+        return tuple(item.strip().lower() for item in value.split(",") if item.strip())
 
     @model_validator(mode="after")
     def validate_threshold_range(self) -> "TrainingRequest":

@@ -12,6 +12,7 @@ from scipy.stats import ks_2samp
 
 from src.config.settings import Settings
 from src.data.split_data import DataSplits
+from src.features.feature_engineering import FraudFeatureEngineer
 
 
 DEFAULT_DRIFT_COLUMNS = (
@@ -45,7 +46,7 @@ class DataDriftReportService:
         important_features: list[str] | None = None,
     ) -> dict[str, Any]:
         """Write drift JSON/Markdown/CSV artifacts and return the JSON payload."""
-        frames = self._split_frames(splits)
+        frames = self._engineered_split_frames(splits)
         columns = self._columns(frames, important_features)
         numeric_rows: list[dict[str, Any]] = []
         categorical_rows: list[dict[str, Any]] = []
@@ -186,6 +187,17 @@ class DataDriftReportService:
         }
         if splits.out_of_time is not None:
             frames["out_of_time"] = splits.out_of_time
+        return frames
+
+    def _engineered_split_frames(self, splits: DataSplits) -> dict[str, pd.DataFrame]:
+        """Apply the same deterministic feature engineering used by training."""
+        raw_frames = self._split_frames(splits)
+        engineer = FraudFeatureEngineer(self.settings)
+        frames = {"train": engineer.fit_transform(raw_frames["train"])}
+        for split, frame in raw_frames.items():
+            if split == "train":
+                continue
+            frames[split] = engineer.transform(frame)
         return frames
 
     @staticmethod

@@ -146,6 +146,13 @@ def test_mlflow_tracking_logs_governed_run_without_real_server(tmp_path, monkeyp
         "training_max_rows": None,
         "strict_leakage_prevention": True,
         "geo_ablation_enabled": False,
+        "feature_exclusions": ["merchant_city", "merchant_state"],
+        "exclude_geographic_features": False,
+        "leakage_audit_status": "pass",
+        "target_audit_status": "warning",
+        "data_drift_status": "warning",
+        "robustness_status": "pass",
+        "walk_forward_status": "pass",
         "baseline_decision": {"decision": "keep_candidate"},
         "experiment_fingerprint": "fingerprint",
     }
@@ -164,9 +171,55 @@ def test_mlflow_tracking_logs_governed_run_without_real_server(tmp_path, monkeyp
     }
     assert fake_mlflow.started_run["run_name"] == "run-1"
     assert fake_mlflow.started_run["tags"]["training_run_id"] == "run-1"
+    assert fake_mlflow.started_run["tags"]["target_audit_status"] == "warning"
+    assert fake_mlflow.started_run["tags"]["data_drift_status"] == "warning"
     assert fake_mlflow.params["model_param_max_iter"] == "1000"
+    assert fake_mlflow.params["feature_exclusions"] == "merchant_city,merchant_state"
+    assert fake_mlflow.params["target_audit_status"] == "warning"
+    assert fake_mlflow.params["robustness_status"] == "pass"
     assert fake_mlflow.metrics["selected_threshold"] == 0.2
     assert fake_mlflow.metrics["test_business_cost"] == 20.0
+    assert fake_mlflow.artifacts["artifact_path"] == "governance"
+
+
+def test_mlflow_tracking_keeps_run_when_model_logging_fails(tmp_path, monkeypatch) -> None:
+    fake_mlflow = _FakeMlflow()
+    monkeypatch.setitem(sys.modules, "mlflow", fake_mlflow)
+    run_dir = tmp_path / "artifacts" / "history" / "run-1"
+    run_dir.mkdir(parents=True)
+    joblib.dump({"model": "fake"}, run_dir / "fraud_pipeline.joblib")
+    settings = Settings(
+        project_root=tmp_path,
+        mlflow_tracking_enabled=True,
+        mlflow_tracking_uri="http://mlflow:5000",
+        mlflow_experiment_name="fraud-tests",
+        mlflow_log_model=True,
+    )
+    metadata = {
+        "run_id": "run-1",
+        "status": "completed",
+        "model_name": "logistic_regression",
+        "model_params": {},
+        "model_selection": {"engine": "fixed", "trial_count": 0},
+        "threshold": 0.2,
+        "threshold_selection": {"strategy": "business_cost"},
+        "validation_metrics": {"pr_auc": 0.8},
+        "test_metrics": {"pr_auc": 0.7},
+        "out_of_time_metrics": {"pr_auc": 0.6},
+        "operational_costs": {},
+        "dataset": {},
+        "baseline_decision": {"decision": "candidate"},
+        "experiment_fingerprint": "fingerprint",
+    }
+
+    mlflow_run_id = MlflowTrackingService(settings).log_completed_run(
+        run_dir,
+        metadata,
+        {"status": "pass"},
+    )
+
+    assert mlflow_run_id == "mlflow-run-1"
+    assert fake_mlflow.metrics["selected_threshold"] == 0.2
     assert fake_mlflow.artifacts["artifact_path"] == "governance"
 
 

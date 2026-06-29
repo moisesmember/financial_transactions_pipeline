@@ -57,13 +57,20 @@ class MlflowTrackingService:
             ) as active_run:
                 mlflow.log_params(self._params(metadata))
                 mlflow.log_metrics(self._metrics(metadata))
-                mlflow.log_artifacts(str(run_dir), artifact_path="governance")
-                self._log_model(
-                    mlflow,
-                    run_dir,
-                    input_example=input_example,
-                    prediction_example=prediction_example,
-                )
+                self._log_governance_artifacts(mlflow, run_dir)
+                try:
+                    self._log_model(
+                        mlflow,
+                        run_dir,
+                        input_example=input_example,
+                        prediction_example=prediction_example,
+                    )
+                except Exception as exc:  # noqa: BLE001 - model artifact must not hide run metrics
+                    logger.warning(
+                        "Modelo MLflow nao registrado; params, metricas e artefatos "
+                        "governados foram preservados quando disponiveis | erro=%s",
+                        exc,
+                    )
                 mlflow_run_id = active_run.info.run_id
             logger.info(
                 "Run registrado no MLflow | training_run_id=%s | mlflow_run_id=%s",
@@ -77,6 +84,18 @@ class MlflowTrackingService:
                 exc,
             )
             return None
+
+    @staticmethod
+    def _log_governance_artifacts(mlflow, run_dir: Path) -> None:
+        """Log governed artifacts without making MLflow model logging all-or-nothing."""
+        try:
+            mlflow.log_artifacts(str(run_dir), artifact_path="governance")
+        except Exception as exc:  # noqa: BLE001 - metrics/params are still useful
+            logger.warning(
+                "Artefatos governados nao foram registrados no MLflow | diretorio=%s | erro=%s",
+                run_dir,
+                exc,
+            )
 
     def _resolve_experiment_id(self, mlflow) -> str:
         experiment = mlflow.get_experiment_by_name(self.settings.mlflow_experiment_name)
@@ -143,6 +162,8 @@ class MlflowTrackingService:
             "model_selection_engine": model_selection.get("engine"),
             "model_selection_objective": model_selection.get("objective"),
             "model_selection_trial_count": model_selection.get("trial_count"),
+            "optuna_temporal_holdout_fraction": model_selection.get("temporal_holdout_fraction"),
+            "optuna_pr_auc_stability_penalty": model_selection.get("pr_auc_stability_penalty"),
             "threshold_strategy": threshold_selection.get("strategy"),
             "false_positive_cost": threshold_selection.get("false_positive_cost"),
             "false_negative_cost": threshold_selection.get("false_negative_cost"),
@@ -155,6 +176,13 @@ class MlflowTrackingService:
             "training_max_rows": metadata.get("training_max_rows"),
             "strict_leakage_prevention": metadata.get("strict_leakage_prevention"),
             "geo_ablation_enabled": metadata.get("geo_ablation_enabled"),
+            "feature_exclusions": ",".join(metadata.get("feature_exclusions", [])),
+            "exclude_geographic_features": metadata.get("exclude_geographic_features"),
+            "leakage_audit_status": metadata.get("leakage_audit_status"),
+            "target_audit_status": metadata.get("target_audit_status"),
+            "data_drift_status": metadata.get("data_drift_status"),
+            "robustness_status": metadata.get("robustness_status"),
+            "walk_forward_status": metadata.get("walk_forward_status"),
             "baseline_decision": metadata.get("baseline_decision", {}).get("decision"),
         }
         for key, value in metadata.get("model_params", {}).items():
@@ -202,6 +230,10 @@ class MlflowTrackingService:
             "training_run_id": str(metadata["run_id"]),
             "status": str(metadata.get("status", "completed")),
             "audit_status": str(leakage_report.get("status", "unknown")),
+            "target_audit_status": str(metadata.get("target_audit_status", "unknown")),
+            "data_drift_status": str(metadata.get("data_drift_status", "unknown")),
+            "robustness_status": str(metadata.get("robustness_status", "unknown")),
+            "walk_forward_status": str(metadata.get("walk_forward_status", "unknown")),
             "promotion_decision": str(metadata.get("baseline_decision", {}).get("decision")),
             "experiment_fingerprint": str(metadata.get("experiment_fingerprint")),
         }
