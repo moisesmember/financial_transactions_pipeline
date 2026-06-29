@@ -37,7 +37,30 @@ def test_merge_adds_labels_and_mcc() -> None:
     assert "mcc_description" in merged.columns
 
 
-def test_merge_rejects_unknown_label_values() -> None:
+def test_merge_uses_inner_join_for_unlabeled_transactions() -> None:
+    settings = Settings()
+    transactions = pd.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "date": ["2020-01-01", "2020-01-02", "2020-01-03"],
+            "amount": [10.0, 20.0, 30.0],
+        }
+    )
+
+    merged = FraudDataMerger(settings).merge(
+        transactions,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        {},
+        {"target": {"1": "No", "2": "Yes"}},
+    )
+
+    assert merged["transaction_id"].tolist() == ["1", "2"]
+    assert merged[settings.target_column].tolist() == [0, 1]
+
+
+@pytest.mark.parametrize("bad_label", [None, "", float("nan"), "unknown"])
+def test_merge_rejects_unknown_label_values(bad_label) -> None:
     settings = Settings()
     transactions = pd.DataFrame(
         {
@@ -53,7 +76,7 @@ def test_merge_rejects_unknown_label_values() -> None:
             pd.DataFrame(),
             pd.DataFrame(),
             {},
-            {"target": {"1": "No", "2": None}},
+            {"target": {"1": "No", "2": bad_label}},
         )
 
 

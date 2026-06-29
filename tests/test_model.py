@@ -16,7 +16,7 @@ from src.models.external_benchmarks import (
     ExternalBenchmarkAdapter,
     ExternalBenchmarkRunner,
 )
-from src.models.optuna_search import OptunaModelSelector
+from src.models.optuna_search import OptunaModelSelector, temporal_selection_score
 from src.models.threshold import find_best_threshold
 from src.models.threshold_analysis import (
     build_cost_scenario_summary,
@@ -262,6 +262,30 @@ def test_external_benchmark_keyboard_interrupt_is_recorded(tmp_path, monkeypatch
     assert summary[0]["backend"] == "autogluon"
     assert summary[0]["status"] == "interrupted"
     assert pd.read_csv(tmp_path / "results.csv").empty
+
+
+def test_temporal_selection_score_penalizes_bad_last_window() -> None:
+    stable = temporal_selection_score(
+        [
+            {"pr_auc": 0.20, "metrics": {"recall": 0.40}},
+            {"pr_auc": 0.18, "metrics": {"recall": 0.35}},
+        ],
+        pr_auc_stability_penalty=0.5,
+        recall_stability_penalty=0.5,
+        last_window_penalty=1.0,
+    )
+    unstable = temporal_selection_score(
+        [
+            {"pr_auc": 0.60, "metrics": {"recall": 0.80}},
+            {"pr_auc": 0.01, "metrics": {"recall": 0.02}},
+        ],
+        pr_auc_stability_penalty=0.5,
+        recall_stability_penalty=0.5,
+        last_window_penalty=1.0,
+    )
+
+    assert unstable["last_window_penalty"] > stable["last_window_penalty"]
+    assert unstable["selection_score"] < stable["selection_score"]
 
 
 def test_optuna_search_executes_each_supported_model_family(tmp_path) -> None:

@@ -143,6 +143,8 @@ class TrainingJobManager:
             "optuna_selection_objective",
             "optuna_temporal_holdout_fraction",
             "optuna_pr_auc_stability_penalty",
+            "optuna_recall_stability_penalty",
+            "optuna_last_window_penalty",
             "training_history_save_pipeline",
             "mlflow_tracking_enabled",
             "mlflow_tracking_uri",
@@ -158,6 +160,10 @@ class TrainingJobManager:
             "promotion_max_oot_pr_auc_drop",
             "promotion_max_cost_increase",
             "promotion_min_oot_pr_auc_lift",
+            "promotion_min_walk_forward_recall",
+            "promotion_min_walk_forward_pr_auc_lift",
+            "promotion_max_walk_forward_recall_drop",
+            "feature_stability_psi_threshold",
         )
         values = asdict(settings)
         return {name: values[name] for name in names}

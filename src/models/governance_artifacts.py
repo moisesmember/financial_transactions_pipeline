@@ -146,9 +146,11 @@ def write_model_review_report(
             "## 9. Data Drift",
             "",
             *_section_status_lines(drift_report),
+            "- See feature_stability_report.json and feature_stability_report.md for PSI by feature and keep/transform/remove recommendations.",
             "",
             "## 10. Threshold Analysis",
             "",
+            "- Threshold ajusta o trade-off entre recall, precision, alert rate e custo; nao corrige score ruim, drift ou overfitting temporal.",
             *_threshold_lines(threshold_recommendations),
             "",
             "## 11. Walk-Forward Validation",
@@ -199,6 +201,21 @@ def _section_status_lines(payload: dict[str, Any] | None) -> list[str]:
     if not payload:
         return ["- Not available."]
     lines = [f"- Status: `{payload.get('status')}`"]
+    lines.extend(f"- Note: {note}" for note in payload.get("notes", []))
+    summary = payload.get("summary") or {}
+    if summary:
+        for key in (
+            "best_fold",
+            "worst_fold",
+            "min_recall_fold",
+            "min_pr_auc_fold",
+            "last_fold_recall",
+            "last_fold_pr_auc",
+            "last_fold_penalty",
+            "recall_drop_best_to_worst",
+        ):
+            if key in summary:
+                lines.append(f"- {key}: {summary.get(key)}")
     lines.extend(f"- Warning: {warning}" for warning in payload.get("warnings", []))
     lines.extend(f"- Failure: {failure}" for failure in payload.get("failures", []))
     return lines

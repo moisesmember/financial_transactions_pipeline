@@ -14,6 +14,7 @@ from src.models.data_drift import DataDriftReportService
 from src.models.robustness import geographic_feature_names, write_robustness_reports
 from src.models.target_audit import TargetAuditService
 from src.models.threshold_analysis import build_threshold_recommendations, build_threshold_table
+from src.models.walk_forward import summarize_walk_forward_folds
 
 
 def _splits() -> DataSplits:
@@ -60,8 +61,25 @@ def test_target_audit_flags_missing_labels(tmp_path) -> None:
     )
 
     assert payload["status"] == "warning"
+    assert payload["target_status"] == "valid_with_coverage_warning"
+    assert payload["target_valid"] is True
+    assert payload["coverage_warning"] is True
     assert payload["missing_label_count"] == 2
-    assert payload["unknown_as_negative_risk"] is True
+    assert payload["missing_transaction_labels_count"] == 2
+    assert payload["missing_transaction_labels_removed"] is True
+    assert payload["supervised_join_type"] == "inner"
+    assert payload["label_join_policy"] == "inner_join"
+    assert payload["unlabeled_transaction_policy"] == "removed_by_inner_join"
+    assert payload["unlabeled_as_negative"] is False
+    assert payload["unknown_labels_used_as_negative"] is False
+    assert payload["invalid_label_values_found"] is False
+    assert payload["invalid_label_policy"] == "raise_error"
+    assert payload["unknown_as_negative_risk"] is False
+    assert any("O target e valido, mas ha warning de cobertura" in item for item in payload["warnings"])
+    markdown = (tmp_path / settings.target_audit_markdown_filename).read_text(encoding="utf-8")
+    assert "Transacoes sem label foram removidas via inner join." in markdown
+    assert "Nenhuma transacao sem label foi convertida para classe 0." in markdown
+    assert "Labels invalidos geram erro antes do treino." in markdown
     assert (tmp_path / settings.target_audit_filename).exists()
     assert (tmp_path / settings.target_audit_by_split_filename).exists()
 
@@ -76,6 +94,8 @@ def test_data_drift_report_writes_json_markdown_and_csv(tmp_path) -> None:
     assert (tmp_path / settings.data_drift_report_filename).exists()
     assert (tmp_path / settings.data_drift_numeric_filename).exists()
     assert (tmp_path / settings.data_drift_categorical_filename).exists()
+    assert (tmp_path / settings.feature_stability_report_filename).exists()
+    assert (tmp_path / settings.feature_stability_markdown_filename).exists()
 
 
 def test_threshold_recommendations_include_validation_and_retrospective_oot() -> None:
@@ -101,6 +121,25 @@ def test_threshold_recommendations_include_validation_and_retrospective_oot() ->
     assert recommendations["validation_lowest_cost"] is not None
     assert recommendations["most_stable"] is not None
     assert recommendations["retrospective_out_of_time_lowest_cost"] is not None
+
+
+def test_walk_forward_summary_flags_bad_last_fold() -> None:
+    summary = summarize_walk_forward_folds(
+        [
+            {"fold": 1, "recall": 0.70, "pr_auc": 0.40, "fraud_rate": 0.01},
+            {"fold": 2, "recall": 0.60, "pr_auc": 0.35, "fraud_rate": 0.01},
+            {"fold": 3, "recall": 0.01, "pr_auc": 0.005, "fraud_rate": 0.01},
+        ],
+        min_recall=0.05,
+        min_pr_auc_lift=1.0,
+        max_recall_drop=0.50,
+    )
+
+    assert summary["worst_fold"] == 3
+    assert summary["last_fold_recall"] == 0.01
+    assert summary["last_fold_penalty"] > 0
+    assert summary["unstable"] is True
+    assert summary["failure_reasons"]
 
 
 def test_baseline_decision_rejects_bad_out_of_time_and_pending_review_for_warnings(tmp_path) -> None:

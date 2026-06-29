@@ -19,7 +19,7 @@ from src.models.train import FraudModelTrainer
 
 
 GEO_CORE = ("merchant_city", "merchant_state")
-GEO_COORDINATES = ("zip", "latitude", "longitude")
+GEO_COORDINATES = ("zip", "address", "latitude", "longitude")
 GEO_ALL = GEO_CORE + GEO_COORDINATES
 TRANSACTIONAL_BEHAVIORAL_KEEP_TOKENS = (
     "amount",
@@ -97,6 +97,28 @@ def run_geographic_ablation(
         ("D_without_all_geo", available_geo, model_name, model_params),
         ("E_transactional_behavioral_only", transactional_exclusions, model_name, model_params),
         ("F_interpretable_baseline", available_geo, "logistic_regression", settings.model_params["logistic_regression"]),
+        (
+            "G_without_transactions_seen_before",
+            tuple(col for col in ("transactions_seen_before",) if col in X_train.columns),
+            model_name,
+            model_params,
+        ),
+        (
+            "H_without_use_chip",
+            tuple(col for col in ("use_chip",) if col in X_train.columns),
+            model_name,
+            model_params,
+        ),
+        (
+            "I_without_city_state_and_transactions_seen",
+            tuple(
+                col
+                for col in (*GEO_CORE, "transactions_seen_before")
+                if col in X_train.columns
+            ),
+            model_name,
+            model_params,
+        ),
     )
     thresholds = threshold_grid(
         settings.threshold_analysis_start,

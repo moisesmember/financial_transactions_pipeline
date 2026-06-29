@@ -108,6 +108,12 @@ class Settings:
     optuna_pr_auc_stability_penalty: float = field(
         default_factory=lambda: _env_float("OPTUNA_PR_AUC_STABILITY_PENALTY", 0.50)
     )
+    optuna_recall_stability_penalty: float = field(
+        default_factory=lambda: _env_float("OPTUNA_RECALL_STABILITY_PENALTY", 0.50)
+    )
+    optuna_last_window_penalty: float = field(
+        default_factory=lambda: _env_float("OPTUNA_LAST_WINDOW_PENALTY", 1.00)
+    )
     external_benchmarks_enabled: bool = field(
         default_factory=lambda: _env_bool_alias(
             "RUN_EXTERNAL_BENCHMARKS",
@@ -193,6 +199,15 @@ class Settings:
     promotion_min_oot_pr_auc_lift: float = field(
         default_factory=lambda: _env_float("PROMOTION_MIN_OOT_PR_AUC_LIFT", 1.0)
     )
+    promotion_min_walk_forward_recall: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MIN_WALK_FORWARD_RECALL", 0.05)
+    )
+    promotion_min_walk_forward_pr_auc_lift: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MIN_WALK_FORWARD_PR_AUC_LIFT", 1.0)
+    )
+    promotion_max_walk_forward_recall_drop: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MAX_WALK_FORWARD_RECALL_DROP", 0.50)
+    )
     dataset_version_override: str | None = field(default_factory=lambda: os.getenv("DATASET_VERSION"))
     feature_set_version: str = field(
         default_factory=lambda: os.getenv("FEATURE_SET_VERSION", "v1")
@@ -248,6 +263,11 @@ class Settings:
     data_drift_markdown_filename: str = "data_drift_report.md"
     data_drift_numeric_filename: str = "data_drift_numeric.csv"
     data_drift_categorical_filename: str = "data_drift_categorical.csv"
+    feature_stability_report_filename: str = "feature_stability_report.json"
+    feature_stability_markdown_filename: str = "feature_stability_report.md"
+    feature_stability_psi_threshold: float = field(
+        default_factory=lambda: _env_float("FEATURE_STABILITY_PSI_THRESHOLD", 0.25)
+    )
     walk_forward_report_filename: str = "walk_forward_report.json"
     walk_forward_markdown_filename: str = "walk_forward_report.md"
     model_review_report_filename: str = "model_review_report.md"
@@ -437,6 +457,10 @@ class Settings:
             raise ValueError("OPTUNA_TEMPORAL_HOLDOUT_FRACTION deve estar entre 0 e 0.5.")
         if self.optuna_pr_auc_stability_penalty < 0:
             raise ValueError("OPTUNA_PR_AUC_STABILITY_PENALTY nao pode ser negativo.")
+        if self.optuna_recall_stability_penalty < 0:
+            raise ValueError("OPTUNA_RECALL_STABILITY_PENALTY nao pode ser negativo.")
+        if self.optuna_last_window_penalty < 0:
+            raise ValueError("OPTUNA_LAST_WINDOW_PENALTY nao pode ser negativo.")
         if self.external_benchmark_time_limit_seconds < 1:
             raise ValueError("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS deve ser positivo.")
         if self.external_benchmark_max_models < 1:
@@ -484,6 +508,14 @@ class Settings:
             raise ValueError("PROMOTION_MAX_COST_INCREASE nao pode ser negativo.")
         if self.promotion_min_oot_pr_auc_lift < 0:
             raise ValueError("PROMOTION_MIN_OOT_PR_AUC_LIFT nao pode ser negativo.")
+        if not 0 <= self.promotion_min_walk_forward_recall <= 1:
+            raise ValueError("PROMOTION_MIN_WALK_FORWARD_RECALL deve estar entre 0 e 1.")
+        if self.promotion_min_walk_forward_pr_auc_lift < 0:
+            raise ValueError("PROMOTION_MIN_WALK_FORWARD_PR_AUC_LIFT nao pode ser negativo.")
+        if not 0 <= self.promotion_max_walk_forward_recall_drop <= 1:
+            raise ValueError("PROMOTION_MAX_WALK_FORWARD_RECALL_DROP deve estar entre 0 e 1.")
+        if self.feature_stability_psi_threshold < 0:
+            raise ValueError("FEATURE_STABILITY_PSI_THRESHOLD nao pode ser negativo.")
         object.__setattr__(self, "threshold_selection_strategy", strategy)
 
     @property
@@ -560,6 +592,8 @@ class Settings:
             self.data_drift_markdown_filename,
             self.data_drift_numeric_filename,
             self.data_drift_categorical_filename,
+            self.feature_stability_report_filename,
+            self.feature_stability_markdown_filename,
             self.walk_forward_report_filename,
             self.walk_forward_markdown_filename,
             self.model_review_report_filename,

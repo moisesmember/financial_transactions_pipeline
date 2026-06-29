@@ -211,6 +211,27 @@ def test_postgres_external_benchmark_rows_are_uniform() -> None:
     assert "created_at" not in rows[0]
 
 
+def test_postgres_robustness_rows_convert_nan_metrics_to_null() -> None:
+    record = PostgresTrainingHistoryRepository._sanitize_database_record(
+        {
+            "experiment_group": "B_without_coordinates",
+            "features_removed": '["zip"]',
+            "top_features": "[]",
+            "tp": float("nan"),
+            "fp": float("nan"),
+            "tn": float("nan"),
+            "fn": float("nan"),
+        }
+    )
+
+    assert record["tp"] is None
+    assert record["fp"] is None
+    assert record["tn"] is None
+    assert record["fn"] is None
+    assert PostgresTrainingHistoryRepository._json_field(record["features_removed"], []) == ["zip"]
+    assert PostgresTrainingHistoryRepository._json_field(record["top_features"], []) == []
+
+
 def test_database_url_is_built_from_postgres_settings(tmp_path) -> None:
     settings = Settings(
         project_root=tmp_path,
@@ -267,6 +288,48 @@ def test_baseline_decision_keeps_candidate_when_threshold_is_at_boundary(tmp_pat
     )
 
     assert decision["decision"] == "pending_review"
+
+
+def test_baseline_decision_rejects_bad_last_walk_forward_fold(tmp_path) -> None:
+    settings = Settings(project_root=tmp_path, promotion_min_walk_forward_recall=0.05)
+    required = tmp_path / "artifact"
+    required.write_text("ok", encoding="utf-8")
+    metrics = {
+        "pr_auc": 0.8,
+        "recall": 0.95,
+        "alert_rate": 0.02,
+        "tp": 95,
+        "fp": 190,
+        "tn": 9700,
+        "fn": 5,
+    }
+
+    decision = BaselineDecisionService(settings).decide(
+        {
+            "validation_metrics": metrics,
+            "test_metrics": metrics,
+            "out_of_time_metrics": {**metrics, "pr_auc": 0.75},
+            "dataset": {"out_of_time_positive_rate": 0.01},
+        },
+        {"status": "pass", "warnings": [], "checks": {}},
+        [required],
+        target_audit={"status": "pass", "target_status": "valid", "unlabeled_as_negative": False},
+        drift_report={"status": "pass"},
+        robustness_report={"status": "pass", "geo_ablation": {"status": "pass"}},
+        walk_forward_report={
+            "status": "fail",
+            "summary": {
+                "last_fold_recall": 0.01,
+                "min_recall_fold": 0.01,
+                "last_fold_pr_auc": 0.005,
+                "min_pr_auc_fold": 0.005,
+                "failure_reasons": ["Ultimo fold com recall abaixo do minimo temporal."],
+            },
+        },
+    )
+
+    assert decision["decision"] == "reject"
+    assert any("Walk-forward" in reason for reason in decision["blocking_reasons"])
 
 
 def test_baseline_decision_approves_when_all_gates_pass_and_promotion_requested(tmp_path) -> None:

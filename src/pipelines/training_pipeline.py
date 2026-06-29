@@ -138,6 +138,8 @@ class TrainingPipeline:
                 "trial_count": selection.trial_count,
                 "temporal_holdout_fraction": self.settings.optuna_temporal_holdout_fraction,
                 "pr_auc_stability_penalty": self.settings.optuna_pr_auc_stability_penalty,
+                "recall_stability_penalty": self.settings.optuna_recall_stability_penalty,
+                "last_window_penalty": self.settings.optuna_last_window_penalty,
             }
         else:
             selected_model_name = self.settings.model_name
@@ -538,6 +540,8 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.target_audit_markdown_filename),
             self.settings.artifact_path(self.settings.data_drift_report_filename),
             self.settings.artifact_path(self.settings.data_drift_markdown_filename),
+            self.settings.artifact_path(self.settings.feature_stability_report_filename),
+            self.settings.artifact_path(self.settings.feature_stability_markdown_filename),
             self.settings.artifact_path(self.settings.robustness_report_filename),
             self.settings.artifact_path(self.settings.geo_ablation_report_filename),
             self.settings.artifact_path(self.settings.threshold_recommendations_filename),

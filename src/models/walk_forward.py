@@ -16,6 +16,84 @@ from src.models.threshold_analysis import build_threshold_table, select_business
 from src.models.train import FraudModelTrainer
 
 
+def summarize_walk_forward_folds(
+    completed: list[dict[str, Any]],
+    min_recall: float,
+    min_pr_auc_lift: float,
+    max_recall_drop: float,
+) -> dict[str, Any]:
+    """Summarize temporal fold stability with emphasis on the last and worst fold."""
+    if not completed:
+        return {
+            "best_fold": None,
+            "worst_fold": None,
+            "mean_recall": None,
+            "median_recall": None,
+            "std_recall": None,
+            "mean_pr_auc": None,
+            "median_pr_auc": None,
+            "std_pr_auc": None,
+            "min_recall_fold": None,
+            "min_pr_auc_fold": None,
+            "last_fold_recall": None,
+            "last_fold_pr_auc": None,
+            "last_fold_penalty": 0.0,
+            "recall_drop_best_to_worst": None,
+            "pr_auc_drop_best_to_worst": None,
+            "unstable": False,
+            "failure_reasons": [],
+        }
+    recalls = np.array([float(row["recall"]) for row in completed], dtype=float)
+    pr_aucs = np.array([float(row["pr_auc"]) for row in completed], dtype=float)
+    best = max(completed, key=lambda row: (float(row["recall"]), float(row["pr_auc"])))
+    worst = min(completed, key=lambda row: (float(row["recall"]), float(row["pr_auc"])))
+    min_pr_auc_row = min(completed, key=lambda row: float(row["pr_auc"]))
+    last = completed[-1]
+    best_recall = float(best["recall"])
+    worst_recall = float(worst["recall"])
+    best_pr_auc = float(best["pr_auc"])
+    worst_pr_auc = float(min_pr_auc_row["pr_auc"])
+    last_recall = float(last["recall"])
+    last_pr_auc = float(last["pr_auc"])
+    last_random_pr_auc = float(last.get("fraud_rate") or 0.0)
+    minimum_last_pr_auc = last_random_pr_auc * min_pr_auc_lift
+    recall_drop = (best_recall - worst_recall) / best_recall if best_recall > 0 else 0.0
+    pr_auc_drop = (best_pr_auc - worst_pr_auc) / best_pr_auc if best_pr_auc > 0 else 0.0
+    last_fold_penalty = (
+        max(0.0, float(np.median(recalls)) - last_recall)
+        + max(0.0, float(np.median(pr_aucs)) - last_pr_auc)
+    )
+    failure_reasons: list[str] = []
+    if worst_recall < min_recall:
+        failure_reasons.append("Pior fold com recall abaixo do minimo temporal.")
+    if last_recall < min_recall:
+        failure_reasons.append("Ultimo fold com recall abaixo do minimo temporal.")
+    if last_pr_auc <= minimum_last_pr_auc:
+        failure_reasons.append("Ultimo fold com PR-AUC proximo do baseline aleatorio.")
+    if recall_drop > max_recall_drop:
+        failure_reasons.append("Queda de recall entre melhor e pior fold acima do limite.")
+    return {
+        "best_fold": int(best["fold"]),
+        "worst_fold": int(worst["fold"]),
+        "mean_recall": float(recalls.mean()),
+        "median_recall": float(np.median(recalls)),
+        "std_recall": float(recalls.std(ddof=0)),
+        "mean_pr_auc": float(pr_aucs.mean()),
+        "median_pr_auc": float(np.median(pr_aucs)),
+        "std_pr_auc": float(pr_aucs.std(ddof=0)),
+        "min_recall_fold": float(worst_recall),
+        "min_pr_auc_fold": float(worst_pr_auc),
+        "last_fold_recall": last_recall,
+        "last_fold_pr_auc": last_pr_auc,
+        "last_fold_random_pr_auc": last_random_pr_auc,
+        "last_fold_penalty": float(last_fold_penalty),
+        "recall_drop_best_to_worst": float(recall_drop),
+        "pr_auc_drop_best_to_worst": float(pr_auc_drop),
+        "unstable": bool(failure_reasons),
+        "failure_reasons": failure_reasons,
+    }
+
+
 class WalkForwardValidator:
     """Run expanding-window validation folds when enabled."""
 
@@ -109,13 +187,22 @@ class WalkForwardValidator:
             )
         warnings = []
         completed = [row for row in rows if row["status"] == "completed"]
+        summary = summarize_walk_forward_folds(
+            completed,
+            min_recall=self.settings.promotion_min_walk_forward_recall,
+            min_pr_auc_lift=self.settings.promotion_min_walk_forward_pr_auc_lift,
+            max_recall_drop=self.settings.promotion_max_walk_forward_recall_drop,
+        )
         if completed:
             recalls = [float(row["recall"]) for row in completed]
             if float(np.std(recalls)) > 0.20:
                 warnings.append("Recall instavel entre folds walk-forward.")
+        warnings.extend(summary.get("failure_reasons", []))
+        status = "fail" if summary.get("failure_reasons") else "warning" if warnings else "pass"
         payload = {
-            "status": "warning" if warnings else "pass",
+            "status": status,
             "warnings": warnings,
+            "summary": summary,
             "folds": rows,
             "completed_fold_count": len(completed),
         }
@@ -131,6 +218,14 @@ class WalkForwardValidator:
             "",
             f"- Status: `{payload['status']}`",
             f"- Completed folds: {payload.get('completed_fold_count', 0)}",
+            f"- Best fold: {payload.get('summary', {}).get('best_fold')}",
+            f"- Worst fold: {payload.get('summary', {}).get('worst_fold')}",
+            f"- Min recall fold: {payload.get('summary', {}).get('min_recall_fold')}",
+            f"- Min PR-AUC fold: {payload.get('summary', {}).get('min_pr_auc_fold')}",
+            f"- Last fold recall: {payload.get('summary', {}).get('last_fold_recall')}",
+            f"- Last fold PR-AUC: {payload.get('summary', {}).get('last_fold_pr_auc')}",
+            f"- Last fold penalty: {payload.get('summary', {}).get('last_fold_penalty')}",
+            f"- Recall drop best-to-worst: {payload.get('summary', {}).get('recall_drop_best_to_worst')}",
             "",
             "## Warnings",
             "",

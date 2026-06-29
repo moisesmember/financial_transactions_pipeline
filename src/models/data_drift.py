@@ -79,6 +79,15 @@ class DataDriftReportService:
             self._markdown(payload),
             encoding="utf-8",
         )
+        feature_stability = self._feature_stability_payload(numeric, categorical)
+        (output_dir / self.settings.feature_stability_report_filename).write_text(
+            json.dumps(feature_stability, indent=2, ensure_ascii=True, allow_nan=False),
+            encoding="utf-8",
+        )
+        (output_dir / self.settings.feature_stability_markdown_filename).write_text(
+            self._feature_stability_markdown(feature_stability),
+            encoding="utf-8",
+        )
         return payload
 
     def _numeric_rows(
@@ -160,6 +169,58 @@ class DataDriftReportService:
             "categorical_feature_count": int(categorical["feature"].nunique()) if not categorical.empty else 0,
             "max_numeric_psi": self._safe_float(numeric["psi_vs_train"].max()) if not numeric.empty else None,
             "max_categorical_psi": self._safe_float(categorical["psi_vs_train"].max()) if not categorical.empty else None,
+        }
+
+    def _feature_stability_payload(
+        self,
+        numeric: pd.DataFrame,
+        categorical: pd.DataFrame,
+    ) -> dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        for feature_type, frame in (("numeric", numeric), ("categorical", categorical)):
+            if frame.empty:
+                continue
+            for row in frame.loc[frame["split"].ne("train")].to_dict(orient="records"):
+                psi = self._safe_float(row.get("psi_vs_train"))
+                recommendation = "keep"
+                if psi is not None and psi >= self.settings.feature_stability_psi_threshold:
+                    recommendation = "transform_or_remove"
+                rows.append(
+                    {
+                        "feature": row["feature"],
+                        "feature_type": feature_type,
+                        "split": row["split"],
+                        "psi_vs_train": psi,
+                        "recommendation": recommendation,
+                    }
+                )
+        rows.sort(
+            key=lambda item: (
+                item["psi_vs_train"] is None,
+                -(item["psi_vs_train"] or 0.0),
+                item["feature"],
+                item["split"],
+            )
+        )
+        high_drift = [
+            item
+            for item in rows
+            if item["psi_vs_train"] is not None
+            and item["psi_vs_train"] >= self.settings.feature_stability_psi_threshold
+        ]
+        return {
+            "status": "warning" if high_drift else "pass",
+            "psi_threshold": self.settings.feature_stability_psi_threshold,
+            "feature_count": len({item["feature"] for item in rows}),
+            "high_drift_feature_count": len({item["feature"] for item in high_drift}),
+            "features_with_high_drift": sorted({item["feature"] for item in high_drift}),
+            "removed_by_drift": [],
+            "recommendations": rows,
+            "top_drift": rows[:20],
+            "notes": [
+                "Threshold nao corrige score ruim, drift ou overfitting temporal.",
+                "Use este relatorio para decidir se a feature deve ser mantida, transformada ou removida em novo experimento.",
+            ],
         }
 
     def _columns(
@@ -258,4 +319,30 @@ class DataDriftReportService:
             "",
             *[f"- {warning}" for warning in payload.get("warnings", [])],
         ]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _feature_stability_markdown(payload: dict[str, Any]) -> str:
+        lines = [
+            "# Feature Stability Report",
+            "",
+            f"- Status: `{payload['status']}`",
+            f"- PSI threshold: {payload['psi_threshold']}",
+            f"- Features analisadas: {payload['feature_count']}",
+            f"- Features com drift alto: {payload['high_drift_feature_count']}",
+            "",
+            "## Notes",
+            "",
+            *[f"- {note}" for note in payload.get("notes", [])],
+            "",
+            "## Top Drift",
+            "",
+            "| Feature | Split | PSI | Recommendation |",
+            "|---|---|---:|---|",
+        ]
+        for row in payload.get("top_drift", []):
+            lines.append(
+                f"| {row['feature']} | {row['split']} | {row['psi_vs_train']} | "
+                f"{row['recommendation']} |"
+            )
         return "\n".join(lines) + "\n"

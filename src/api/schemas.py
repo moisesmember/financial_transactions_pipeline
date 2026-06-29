@@ -82,6 +82,8 @@ class TrainingRequest(BaseModel):
     optuna_selection_objective: Literal["validation_pr_auc", "temporal_stability"] | None = None
     optuna_temporal_holdout_fraction: float | None = Field(default=None, gt=0.0, lt=0.5)
     optuna_pr_auc_stability_penalty: float | None = Field(default=None, ge=0.0)
+    optuna_recall_stability_penalty: float | None = Field(default=None, ge=0.0)
+    optuna_last_window_penalty: float | None = Field(default=None, ge=0.0)
     training_history_save_pipeline: bool | None = None
     mlflow_tracking_enabled: bool | None = None
     mlflow_tracking_uri: str | None = None
@@ -97,6 +99,10 @@ class TrainingRequest(BaseModel):
     promotion_max_oot_pr_auc_drop: float | None = Field(default=None, ge=0.0, le=1.0)
     promotion_max_cost_increase: float | None = Field(default=None, ge=0.0)
     promotion_min_oot_pr_auc_lift: float | None = Field(default=None, ge=0.0)
+    promotion_min_walk_forward_recall: float | None = Field(default=None, ge=0.0, le=1.0)
+    promotion_min_walk_forward_pr_auc_lift: float | None = Field(default=None, ge=0.0)
+    promotion_max_walk_forward_recall_drop: float | None = Field(default=None, ge=0.0, le=1.0)
+    feature_stability_psi_threshold: float | None = Field(default=None, ge=0.0)
 
     @field_validator("threshold_cost_scenarios", mode="before")
     @classmethod
