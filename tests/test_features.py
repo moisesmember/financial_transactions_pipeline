@@ -79,3 +79,22 @@ def test_preprocessor_drops_sensitive_and_snapshot_features_in_strict_mode() -> 
     assert {"address", "cvv", "card_on_dark_web", "credit_score", "errors", "client_id_card"} <= set(
         drop_cols
     )
+
+
+def test_preprocessor_drops_configured_feature_exclusions(monkeypatch) -> None:
+    monkeypatch.setenv("FEATURE_EXCLUSIONS", "merchant_city,merchant_state,zip,latitude,longitude")
+    settings = Settings()
+    frame = pd.DataFrame(
+        {
+            "amount": [10.0],
+            "merchant_city": ["Sao Paulo"],
+            "merchant_state": ["SP"],
+            "zip": [1000],
+            "latitude": [-23.5],
+            "longitude": [-46.6],
+        }
+    )
+
+    drop_cols = columns_to_drop(frame.columns, settings)
+
+    assert {"merchant_city", "merchant_state", "zip", "latitude", "longitude"} <= set(drop_cols)

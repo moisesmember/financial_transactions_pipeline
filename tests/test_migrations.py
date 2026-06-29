@@ -37,6 +37,12 @@ MODEL_SEARCH_MIGRATION_PATH = (
     / "versions"
     / "20260614_0005_add_model_search_tracking.py"
 )
+ROBUSTNESS_SPLIT_MIGRATION_PATH = (
+    PROJECT_ROOT
+    / "migrations"
+    / "versions"
+    / "20260628_0006_add_split_to_robustness_experiments.py"
+)
 
 
 def test_initial_migration_has_expected_revision_and_operations() -> None:
@@ -102,3 +108,12 @@ def test_model_search_migration_tracks_optuna_and_external_benchmarks() -> None:
     assert 'down_revision: str | None = "20260614_0004"' in content
     assert '"model_search_trials"' in content
     assert '"external_benchmark_results"' in content
+
+
+def test_robustness_split_migration_tracks_each_temporal_split() -> None:
+    content = ROBUSTNESS_SPLIT_MIGRATION_PATH.read_text(encoding="utf-8")
+
+    assert 'revision: str = "20260628_0006"' in content
+    assert 'down_revision: str | None = "20260614_0005"' in content
+    assert '"split"' in content
+    assert '["experiment_run_id", "split"]' in content

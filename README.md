@@ -507,7 +507,15 @@ OPTUNA_MODEL_CANDIDATES=logistic_regression,random_forest,hist_gradient_boosting
 OPTUNA_TRIALS=15
 OPTUNA_TIMEOUT_SECONDS=900
 OPTUNA_N_JOBS=1
+OPTUNA_SELECTION_OBJECTIVE=temporal_stability
+OPTUNA_TEMPORAL_HOLDOUT_FRACTION=0.20
+OPTUNA_PR_AUC_STABILITY_PENALTY=0.50
 ```
+
+Com `OPTUNA_SELECTION_OBJECTIVE=temporal_stability`, cada trial tambem e
+avaliado em uma janela temporal no fim do treino e recebe penalidade quando a
+PR-AUC varia muito entre essa janela e a validacao oficial. Isso reduz a chance
+de escolher um modelo que apenas explora a validacao tradicional.
 
 Use `OPTUNA_N_JOBS=1` para maior reprodutibilidade e controle de memória. Uma
 dependência opcional ausente faz somente aquele candidato ser ignorado, com um
@@ -608,12 +616,29 @@ PROMOTION_MIN_RECALL=0.90
 PROMOTION_MAX_ALERT_RATE=0.025
 PROMOTION_MAX_OOT_PR_AUC_DROP=0.15
 PROMOTION_MAX_COST_INCREASE=0.05
+PROMOTION_MIN_OOT_PR_AUC_LIFT=1.0
 BASELINE_WARNING_JUSTIFICATION=
 ```
 
 Para executar as ablações geográficas e os experimentos de robustez, habilite
 `RUN_GEO_ABLATION=true`. Esse modo treina variantes adicionais e aumenta
 consideravelmente tempo e memória.
+
+Para excluir colunas do modelo principal, use:
+
+```bash
+FEATURE_EXCLUSIONS=merchant_city,merchant_state,zip,latitude,longitude
+```
+
+Ou, para remover o conjunto geografico padrao:
+
+```bash
+EXCLUDE_GEOGRAPHIC_FEATURES=true
+```
+
+Deixe essas opcoes vazias/desativadas quando quiser que o modelo principal seja
+o completo e que a comparacao sem geografia seja feita apenas pelos experimentos
+de ablation.
 
 Para executar validação temporal walk-forward:
 

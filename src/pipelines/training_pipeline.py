@@ -133,9 +133,11 @@ class TrainingPipeline:
             selected_model_params = selection.model_params
             selection_metadata = {
                 "engine": "optuna",
-                "objective": "validation_pr_auc",
+                "objective": self.settings.optuna_selection_objective,
                 "validation_pr_auc": selection.validation_pr_auc,
                 "trial_count": selection.trial_count,
+                "temporal_holdout_fraction": self.settings.optuna_temporal_holdout_fraction,
+                "pr_auc_stability_penalty": self.settings.optuna_pr_auc_stability_penalty,
             }
         else:
             selected_model_name = self.settings.model_name
@@ -448,6 +450,9 @@ class TrainingPipeline:
             "model_params": selected_model_params,
             "random_state": self.settings.random_state,
             "training_max_rows": self.settings.training_max_rows,
+            "feature_exclusions": self.settings.feature_exclusions,
+            "exclude_geographic_features": self.settings.exclude_geographic_features,
+            "optuna_selection_objective": self.settings.optuna_selection_objective,
         }
         metadata = {
             "run_id": run_id,
@@ -515,6 +520,8 @@ class TrainingPipeline:
             "code_version": current_code_version,
             "experiment_fingerprint": experiment_fingerprint(reproducibility),
             "geo_ablation_enabled": self.settings.run_geo_ablation,
+            "feature_exclusions": list(self.settings.feature_exclusions),
+            "exclude_geographic_features": self.settings.exclude_geographic_features,
         }
         required_for_decision = [
             self.settings.pipeline_path,

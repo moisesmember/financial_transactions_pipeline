@@ -411,19 +411,26 @@ class PostgresTrainingHistoryRepository:
             return
         table = metadata.tables[key]
         frame = pd.read_csv(path)
+        if "split" not in table.c:
+            frame = frame.drop_duplicates(subset=["experiment_run_id"], keep="last")
         rows = []
         for record in frame.to_dict(orient="records"):
             record["features_removed"] = json.loads(record["features_removed"])
             record["top_features"] = json.loads(record["top_features"])
             rows.append(self._supported_values(table, record))
+        if not rows:
+            return
         statement = insert(table).values(rows)
+        conflict_columns = ["experiment_run_id"]
+        if "split" in table.c:
+            conflict_columns.append("split")
         connection.execute(
             statement.on_conflict_do_update(
-                index_elements=["experiment_run_id"],
+                index_elements=conflict_columns,
                 set_={
                     column.name: getattr(statement.excluded, column.name)
                     for column in table.columns
-                    if column.name != "experiment_run_id"
+                    if column.name not in {*conflict_columns, "created_at"}
                 },
             )
         )

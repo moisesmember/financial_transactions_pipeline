@@ -36,12 +36,16 @@ def first_existing(columns: Iterable[str], candidates: Iterable[str]) -> str | N
     return None
 
 
-def _normalize_label_value(value: Any) -> int:
-    """Convert common fraud labels to 0/1."""
+def _normalize_label_value(value: Any) -> int | None:
+    """Convert explicit fraud labels to 0/1 without inventing negatives."""
     if pd.isna(value):
-        return 0
+        return None
     normalized = str(value).strip().lower()
-    return int(normalized in {"1", "true", "yes", "y", "fraud", "fraudulent"})
+    if normalized in {"1", "true", "yes", "y", "fraud", "fraudulent"}:
+        return 1
+    if normalized in {"0", "false", "no", "n", "non_fraud", "not_fraud", "legitimate"}:
+        return 0
+    return None
 
 
 class FraudDataMerger:
@@ -84,6 +88,14 @@ class FraudDataMerger:
         )
         frame["transaction_id"] = frame["transaction_id"].astype(str)
         frame[self.settings.target_column] = frame[self.settings.target_column].map(_normalize_label_value)
+        invalid_labels = frame[self.settings.target_column].isna()
+        if invalid_labels.any():
+            examples = frame.loc[invalid_labels, "transaction_id"].head(5).tolist()
+            raise ValueError(
+                "Labels ausentes ou desconhecidos nao podem ser tratados como classe 0. "
+                f"Transacoes afetadas: {examples}"
+            )
+        frame[self.settings.target_column] = frame[self.settings.target_column].astype(int)
         return frame
 
     def _mcc_to_frame(self, mcc_codes: object) -> pd.DataFrame:

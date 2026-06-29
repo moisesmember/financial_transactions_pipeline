@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from src.config.settings import Settings
 from src.data.limit_data import TrainingDataLimiter
@@ -34,6 +35,26 @@ def test_merge_adds_labels_and_mcc() -> None:
     assert settings.target_column in merged.columns
     assert merged[settings.target_column].tolist() == [0, 1]
     assert "mcc_description" in merged.columns
+
+
+def test_merge_rejects_unknown_label_values() -> None:
+    settings = Settings()
+    transactions = pd.DataFrame(
+        {
+            "id": [1, 2],
+            "date": ["2020-01-01", "2020-01-02"],
+            "amount": [10.0, 20.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="nao podem ser tratados como classe 0"):
+        FraudDataMerger(settings).merge(
+            transactions,
+            pd.DataFrame(),
+            pd.DataFrame(),
+            {},
+            {"target": {"1": "No", "2": None}},
+        )
 
 
 def test_temporal_split_preserves_order() -> None:
