@@ -154,6 +154,7 @@ class TrainingJobManager:
             "mlflow_register_model",
             "mlflow_registered_model_name",
             "training_max_rows",
+            "training_negative_positive_ratio",
             "baseline_warning_justification",
             "promotion_min_recall",
             "promotion_max_alert_rate",

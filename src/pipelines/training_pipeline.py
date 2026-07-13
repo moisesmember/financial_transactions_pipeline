@@ -23,6 +23,7 @@ from src.models.baseline_decision import BaselineDecisionService
 from src.models.calibration import write_calibration_artifacts
 from src.models.data_drift import DataDriftReportService
 from src.models.evaluate import evaluate_binary_classifier
+from src.models.error_attribution import build_error_attribution_report
 from src.models.external_benchmarks import BENCHMARK_RESULT_COLUMNS, ExternalBenchmarkRunner
 from src.models.feature_report import build_feature_importance
 from src.models.governance_artifacts import (
@@ -91,7 +92,6 @@ class TrainingPipeline:
 
         repository = RawDataRepository(self.settings)
         raw = repository.load_all()
-        raw["transactions"] = TrainingDataLimiter(self.settings.training_max_rows).apply(raw["transactions"])
         raw_transactions = raw["transactions"].copy()
         raw_labels = raw["labels"]
         merged = FraudDataMerger(self.settings).merge(
@@ -264,6 +264,36 @@ class TrainingPipeline:
             out_of_time_scores,
             threshold=threshold,
             beta=self.settings.threshold_beta,
+        )
+
+        original_train_rows = len(splits.train)
+        original_train_positives = int(splits.train[self.settings.target_column].eq(1).sum())
+        limited_train = TrainingDataLimiter(
+            self.settings.training_max_rows,
+            negative_positive_ratio=self.settings.training_negative_positive_ratio,
+            random_state=self.settings.random_state,
+        ).apply(
+            splits.train,
+            target_column=self.settings.target_column,
+            time_column=splits.time_column,
+        )
+        splits = type(splits)(
+            train=limited_train,
+            validation=splits.validation,
+            test=splits.test,
+            time_column=splits.time_column,
+            out_of_time=splits.out_of_time,
+        )
+        build_error_attribution_report(
+            {"validation": X_val, "test": X_test, "out_of_time": X_out_of_time},
+            {"validation": y_val, "test": y_test, "out_of_time": y_out_of_time},
+            {
+                "validation": validation_scores,
+                "test": test_scores,
+                "out_of_time": out_of_time_scores,
+            },
+            threshold,
+            self.settings.artifact_path(self.settings.error_attribution_report_filename),
         )
         leakage_report = LeakageAuditService(self.settings).build_report(
             splits,
@@ -452,6 +482,7 @@ class TrainingPipeline:
             "model_params": selected_model_params,
             "random_state": self.settings.random_state,
             "training_max_rows": self.settings.training_max_rows,
+            "training_negative_positive_ratio": self.settings.training_negative_positive_ratio,
             "feature_exclusions": self.settings.feature_exclusions,
             "exclude_geographic_features": self.settings.exclude_geographic_features,
             "optuna_selection_objective": self.settings.optuna_selection_objective,
@@ -470,9 +501,14 @@ class TrainingPipeline:
             "out_of_time_metrics": out_of_time_metrics,
             "time_column": splits.time_column,
             "training_max_rows": self.settings.training_max_rows,
+            "training_negative_positive_ratio": self.settings.training_negative_positive_ratio,
             "strict_leakage_prevention": self.settings.strict_leakage_prevention,
             "dataset": {
                 "train_rows": len(y_train),
+                "train_rows_before_negative_sampling": original_train_rows,
+                "train_positive_rows_before_negative_sampling": original_train_positives,
+                "train_positive_rows_after_negative_sampling": int(y_train.eq(1).sum()),
+                "train_negative_rows_after_negative_sampling": int(y_train.eq(0).sum()),
                 "validation_rows": len(y_val),
                 "test_rows": len(y_test),
                 "out_of_time_rows": len(y_out_of_time),
@@ -545,6 +581,7 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.robustness_report_filename),
             self.settings.artifact_path(self.settings.geo_ablation_report_filename),
             self.settings.artifact_path(self.settings.threshold_recommendations_filename),
+            self.settings.artifact_path(self.settings.error_attribution_report_filename),
         ]
         baseline_decision = BaselineDecisionService(self.settings).decide(
             metadata,

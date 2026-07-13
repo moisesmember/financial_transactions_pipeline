@@ -117,25 +117,54 @@ def test_temporal_split_keeps_equal_timestamps_in_same_partition() -> None:
     assert splits.validation["date"].max() < splits.test["date"].min()
 
 
-def test_training_data_limiter_preserves_source_order() -> None:
-    """Training row limits should be applied before expensive processing."""
-    transactions = pd.DataFrame({"id": range(10), "amount": range(10)})
-
-    limited = TrainingDataLimiter(max_rows=4).apply(transactions)
-
-    assert limited["id"].tolist() == [0, 1, 2, 3]
-    assert len(transactions) == 10
-
-
-def test_training_data_limiter_preserves_full_time_horizon() -> None:
-    transactions = pd.DataFrame(
+def test_training_data_limiter_preserves_every_positive_and_only_samples_negatives() -> None:
+    training = pd.DataFrame(
         {
-            "id": range(10),
-            "date": pd.date_range("2020-01-01", periods=10, freq="D"),
+            "id": range(12),
+            "date": pd.date_range("2020-01-01", periods=12, freq="MS"),
+            "is_fraud": [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
         }
     )
 
-    limited = TrainingDataLimiter(max_rows=4).apply(transactions)
+    limited = TrainingDataLimiter(max_rows=7, negative_positive_ratio=2).apply(training)
 
-    assert limited["date"].min() == transactions["date"].min()
-    assert limited["date"].max() == transactions["date"].max()
+    assert set(training.loc[training["is_fraud"].eq(1), "id"]) <= set(limited["id"])
+    assert int(limited["is_fraud"].sum()) == 4
+    assert len(limited) == 7
+
+
+def test_training_data_limiter_caps_negatives_within_each_month() -> None:
+    dates = [pd.Timestamp("2020-01-01")] * 12 + [pd.Timestamp("2020-02-01")] * 8
+    training = pd.DataFrame(
+        {
+            "id": range(20),
+            "date": dates,
+            "is_fraud": [1, 1] + [0] * 10 + [1] + [0] * 7,
+        }
+    )
+
+    limited = TrainingDataLimiter(max_rows=None, negative_positive_ratio=2).apply(training)
+    monthly = limited.assign(month=limited["date"].dt.to_period("M")).groupby("month")["is_fraud"]
+
+    assert monthly.sum().to_dict() == {
+        pd.Period("2020-01", freq="M"): 2,
+        pd.Period("2020-02", freq="M"): 1,
+    }
+    assert limited.groupby(limited["date"].dt.to_period("M")).size().to_dict() == {
+        pd.Period("2020-01", freq="M"): 6,
+        pd.Period("2020-02", freq="M"): 3,
+    }
+
+
+def test_training_data_limiter_allows_positive_count_to_exceed_preferred_limit() -> None:
+    training = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=5, freq="D"),
+            "is_fraud": [1, 1, 1, 1, 0],
+        }
+    )
+
+    limited = TrainingDataLimiter(max_rows=2).apply(training)
+
+    assert len(limited) == 4
+    assert limited["is_fraud"].eq(1).all()

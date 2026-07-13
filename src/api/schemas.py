@@ -93,6 +93,7 @@ class TrainingRequest(BaseModel):
     mlflow_register_model: bool | None = None
     mlflow_registered_model_name: str | None = None
     training_max_rows: int | None = Field(default=None, ge=0)
+    training_negative_positive_ratio: int | None = Field(default=None, ge=1)
     baseline_warning_justification: str | None = None
     promotion_min_recall: float | None = Field(default=None, ge=0.0, le=1.0)
     promotion_max_alert_rate: float | None = Field(default=None, ge=0.0, le=1.0)

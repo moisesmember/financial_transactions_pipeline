@@ -11,10 +11,41 @@ from src.config.settings import Settings
 from src.data.split_data import DataSplits
 from src.models.baseline_decision import BaselineDecisionService
 from src.models.data_drift import DataDriftReportService
+from src.models.error_attribution import build_error_attribution_report
 from src.models.robustness import geographic_feature_names, write_robustness_reports
 from src.models.target_audit import TargetAuditService
 from src.models.threshold_analysis import build_threshold_recommendations, build_threshold_table
 from src.models.walk_forward import summarize_walk_forward_folds
+
+
+def test_error_attribution_report_describes_all_confusion_cohorts(tmp_path) -> None:
+    frame = pd.DataFrame(
+        {
+            "amount": [10.0, 20.0, 100.0, 200.0],
+            "use_chip": ["Chip", "Swipe", "Online", "Online"],
+            "mcc": [1, 2, 3, 4],
+            "merchant_city": ["A", "B", "C", "D"],
+            "merchant_state": ["AA", "BB", "CC", "DD"],
+            "transaction_hour": [1, 2, 3, 4],
+        }
+    )
+    output = tmp_path / "error_attribution_report.json"
+
+    report = build_error_attribution_report(
+        {"out_of_time": frame},
+        {"out_of_time": pd.Series([1, 0, 1, 0])},
+        {"out_of_time": np.array([0.9, 0.8, 0.2, 0.1])},
+        threshold=0.5,
+        output_path=output,
+    )
+
+    cohorts = report["splits"]["out_of_time"]
+    assert [cohorts[name]["count"] for name in ("TP", "FP", "FN", "TN")] == [1, 1, 1, 1]
+    assert cohorts["FP"]["amount_mean"] == 20.0
+    assert cohorts["FN"]["amount_mean"] == 100.0
+    assert cohorts["fp_vs_fn"]["amount_mean_difference_fp_minus_fn"] == -80.0
+    assert report["shap_status"] == "not_computed"
+    assert output.exists()
 
 
 def _splits() -> DataSplits:

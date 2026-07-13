@@ -235,6 +235,9 @@ class Settings:
     training_max_rows: int | None = field(
         default_factory=lambda: _env_optional_positive_int("TRAINING_MAX_ROWS", 500_000)
     )
+    training_negative_positive_ratio: int = field(
+        default_factory=lambda: int(os.getenv("TRAINING_NEGATIVE_POSITIVE_RATIO", "100"))
+    )
     target_column: str = "is_fraud"
     pipeline_filename: str = "fraud_pipeline.joblib"
     metadata_filename: str = "model_metadata.joblib"
@@ -272,6 +275,7 @@ class Settings:
     walk_forward_markdown_filename: str = "walk_forward_report.md"
     model_review_report_filename: str = "model_review_report.md"
     threshold_recommendations_filename: str = "threshold_recommendations.json"
+    error_attribution_report_filename: str = "error_attribution_report.json"
     optuna_trials_filename: str = "optuna_trials.csv"
     optuna_study_filename: str = "optuna_study.json"
     external_benchmark_filename: str = "external_benchmark_results.csv"
@@ -516,6 +520,8 @@ class Settings:
             raise ValueError("PROMOTION_MAX_WALK_FORWARD_RECALL_DROP deve estar entre 0 e 1.")
         if self.feature_stability_psi_threshold < 0:
             raise ValueError("FEATURE_STABILITY_PSI_THRESHOLD nao pode ser negativo.")
+        if self.training_negative_positive_ratio < 1:
+            raise ValueError("TRAINING_NEGATIVE_POSITIVE_RATIO deve ser pelo menos 1.")
         object.__setattr__(self, "threshold_selection_strategy", strategy)
 
     @property
@@ -598,6 +604,7 @@ class Settings:
             self.walk_forward_markdown_filename,
             self.model_review_report_filename,
             self.threshold_recommendations_filename,
+            self.error_attribution_report_filename,
             self.optuna_trials_filename,
             self.optuna_study_filename,
             self.external_benchmark_filename,

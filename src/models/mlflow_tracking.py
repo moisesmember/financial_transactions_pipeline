@@ -174,6 +174,7 @@ class MlflowTrackingService:
             "code_version": metadata.get("code_version"),
             "dataset_version": metadata.get("dataset_version"),
             "training_max_rows": metadata.get("training_max_rows"),
+            "training_negative_positive_ratio": metadata.get("training_negative_positive_ratio"),
             "strict_leakage_prevention": metadata.get("strict_leakage_prevention"),
             "geo_ablation_enabled": metadata.get("geo_ablation_enabled"),
             "feature_exclusions": ",".join(metadata.get("feature_exclusions", [])),

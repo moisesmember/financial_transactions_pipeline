@@ -675,6 +675,22 @@ Com o ambiente virtual ativado, instale as dependências do projeto:
 
 ```bash
 pip install -U -r requirements.txt
+python -m pip install -U -r requirements.txt
+```
+
+Se o ambiente já tiver o pacote descontinuado `ydata-profiling`, substitua-o
+pelo `fg-data-profiling` e instale o suporte a widgets do Jupyter:
+
+```bash
+pip uninstall ydata-profiling
+pip install ipywidgets
+pip install fg-data-profiling
+```
+
+Para gerar relatórios de perfilamento, use o novo namespace do pacote:
+
+```python
+from data_profiling import ProfileReport
 ```
 
 Inicie o JupyterLab na raiz do projeto:
@@ -746,6 +762,12 @@ curl "http://localhost:8000/training-runs/JOB_ID"
 
 Todos os campos do body são opcionais. Campos ausentes ou `null` mantêm os
 valores resolvidos do `.env`; `TRAINING_MAX_ROWS=0` processa o dataset completo.
+Quando existe limite, ele e aplicado somente depois do inner join e do split
+temporal: todos os positivos do treino sao preservados e apenas negativos sao
+amostrados por mes. Validacao, teste e out-of-time nao sao reduzidos. Use
+`TRAINING_NEGATIVE_POSITIVE_RATIO=100` para controlar a razao maxima aproximada
+de negativos por positivo em cada periodo. Se os positivos sozinhos excederem
+`TRAINING_MAX_ROWS`, nenhum positivo sera removido.
 Os nomes também podem ser enviados em `snake_case`. Apenas um treinamento pode
 executar por processo da API. Cada job usa staging isolado em
 `.runtime/training/<job_id>` para não disputar arquivos com a inferência. Em
