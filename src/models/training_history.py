@@ -141,7 +141,24 @@ class TrainingHistoryRegistry:
             "audit_warning_count": len(leakage_report.get("warnings", [])),
             "audit_failure_count": len(leakage_report.get("failures", [])),
             "training_max_rows": metadata["training_max_rows"],
+            "raw_data_max_rows": metadata.get("raw_data_max_rows"),
+            "negative_sampling_enabled": metadata.get("negative_sampling_enabled"),
+            "negative_sampling_strategy": metadata.get("negative_sampling_strategy"),
+            "negative_sampling_by": metadata.get("negative_sampling_by"),
+            "negative_to_positive_ratio": metadata.get("training_negative_positive_ratio"),
+            "sampling_audit_status": metadata.get("sampling_audit_status"),
             "train_rows": metadata["dataset"]["train_rows"],
+            "train_rows_before_negative_sampling": metadata["dataset"].get(
+                "train_rows_before_negative_sampling"
+            ),
+            "train_positive_count": metadata["dataset"].get("train_positive_count"),
+            "validation_positive_count": metadata["dataset"].get(
+                "validation_positive_count"
+            ),
+            "test_positive_count": metadata["dataset"].get("test_positive_count"),
+            "out_of_time_positive_count": metadata["dataset"].get(
+                "out_of_time_positive_count"
+            ),
             "validation_rows": metadata["dataset"]["validation_rows"],
             "test_rows": metadata["dataset"]["test_rows"],
             "out_of_time_rows": metadata["dataset"].get("out_of_time_rows"),

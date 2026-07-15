@@ -17,7 +17,7 @@ class ObjectStore(ABC):
         """Return whether an object exists."""
 
     @abstractmethod
-    def read_csv(self, key: str) -> pd.DataFrame:
+    def read_csv(self, key: str, nrows: int | None = None) -> pd.DataFrame:
         """Read a CSV object into a dataframe."""
 
     @abstractmethod

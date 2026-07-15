@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -415,8 +416,9 @@ class PostgresTrainingHistoryRepository:
             frame = frame.drop_duplicates(subset=["experiment_run_id"], keep="last")
         rows = []
         for record in frame.to_dict(orient="records"):
-            record["features_removed"] = json.loads(record["features_removed"])
-            record["top_features"] = json.loads(record["top_features"])
+            record = self._sanitize_database_record(record)
+            record["features_removed"] = self._json_field(record.get("features_removed"), [])
+            record["top_features"] = self._json_field(record.get("top_features"), [])
             rows.append(self._supported_values(table, record))
         if not rows:
             return
@@ -605,10 +607,17 @@ class PostgresTrainingHistoryRepository:
             self.settings.target_audit_markdown_filename: "target_audit_markdown",
             self.settings.target_audit_by_split_filename: "target_audit_by_split",
             self.settings.target_audit_by_period_filename: "target_audit_by_period",
+            self.settings.sampling_audit_filename: "sampling_audit_json",
+            self.settings.sampling_audit_markdown_filename: "sampling_audit_markdown",
+            self.settings.sampling_by_period_filename: "sampling_by_period",
+            self.settings.sampling_by_split_filename: "sampling_by_split",
+            self.settings.sampling_positive_coverage_filename: "sampling_positive_coverage",
             self.settings.data_drift_report_filename: "data_drift_report_json",
             self.settings.data_drift_markdown_filename: "data_drift_report_markdown",
             self.settings.data_drift_numeric_filename: "data_drift_numeric",
             self.settings.data_drift_categorical_filename: "data_drift_categorical",
+            self.settings.feature_stability_report_filename: "feature_stability_report_json",
+            self.settings.feature_stability_markdown_filename: "feature_stability_report_markdown",
             self.settings.walk_forward_report_filename: "walk_forward_report_json",
             self.settings.walk_forward_markdown_filename: "walk_forward_report_markdown",
             self.settings.model_review_report_filename: "model_review_report",
@@ -631,7 +640,40 @@ class PostgresTrainingHistoryRepository:
     @staticmethod
     def _supported_values(table, values: dict[str, Any]) -> dict[str, Any]:
         """Filter payloads to columns available in the migrated database."""
-        return {key: value for key, value in values.items() if key in table.c}
+        return {
+            key: PostgresTrainingHistoryRepository._sanitize_database_value(value)
+            for key, value in values.items()
+            if key in table.c
+        }
+
+    @staticmethod
+    def _sanitize_database_record(record: dict[str, Any]) -> dict[str, Any]:
+        """Convert pandas missing values to SQL NULL before SQLAlchemy binding."""
+        return {
+            key: PostgresTrainingHistoryRepository._sanitize_database_value(value)
+            for key, value in record.items()
+        }
+
+    @staticmethod
+    def _sanitize_database_value(value: Any) -> Any:
+        if value is pd.NA or value is pd.NaT:
+            return None
+        if isinstance(value, float) and math.isnan(value):
+            return None
+        try:
+            if pd.isna(value):
+                return None
+        except (TypeError, ValueError):
+            pass
+        return value
+
+    @staticmethod
+    def _json_field(value: Any, default: Any) -> Any:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return json.loads(value)
+        return value
 
     @staticmethod
     def _uniform_rows(table, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

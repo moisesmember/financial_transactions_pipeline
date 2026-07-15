@@ -64,11 +64,13 @@ class TargetAuditService:
         by_split.to_csv(artifacts.by_split_path, index=False)
         by_period.to_csv(artifacts.by_period_path, index=False)
 
+        coverage_warning = missing_label_count > 0 or supervised_rows < len(tx)
         warnings: list[str] = []
         failures: list[str] = []
         if missing_label_count > 0:
             warnings.append(
-                "Ha transacoes sem label conhecido; o merge supervisionado nao deve trata-las como negativas."
+                "Cobertura de labels incompleta: transacoes sem label foram removidas via inner join; "
+                "nenhuma transacao sem label foi convertida para classe 0."
             )
         if duplicate_transaction_ids > 0:
             failures.append("Existem IDs de transacao duplicados no arquivo de transacoes.")
@@ -76,21 +78,52 @@ class TargetAuditService:
             failures.append("Existem IDs duplicados no arquivo de labels.")
         if orphan_label_count > 0:
             warnings.append("Ha labels que nao correspondem a nenhuma transacao carregada.")
-        if supervised_rows < len(tx):
+        if coverage_warning:
+            coverage_message = (
+                "O target e valido, mas ha warning de cobertura:"
+                if not failures
+                else "Ha warning de cobertura:"
+            )
             warnings.append(
-                "O treino usa apenas transacoes com label conhecido; valide se os labels cobrem todos os periodos."
+                f"{coverage_message} o treino usa apenas transacoes "
+                "com label conhecido; valide se os labels cobrem todos os periodos."
             )
 
+        target_status = (
+            "invalid"
+            if failures
+            else "valid_with_coverage_warning"
+            if coverage_warning or orphan_label_count > 0
+            else "valid"
+        )
         payload = {
             "status": "fail" if failures else ("warning" if warnings else "pass"),
+            "target_status": target_status,
+            "target_valid": target_status != "invalid",
+            "coverage_warning": coverage_warning,
+            "supervised_join_type": "inner",
             "known_label_count": int(label_frame["transaction_id"].nunique()),
             "transaction_count": int(len(tx)),
             "supervised_row_count": int(supervised_rows),
             "missing_label_count": missing_label_count,
+            "missing_transaction_labels_count": missing_label_count,
+            "missing_transaction_labels_removed": missing_label_count > 0,
             "orphan_label_count": orphan_label_count,
+            "orphan_labels_warning": orphan_label_count > 0,
             "duplicate_transaction_ids": duplicate_transaction_ids,
             "duplicate_label_ids": duplicate_label_ids,
-            "unknown_as_negative_risk": missing_label_count > 0,
+            "label_join_policy": "inner_join",
+            "unlabeled_transaction_policy": "removed_by_inner_join",
+            "unlabeled_as_negative": False,
+            "unknown_labels_used_as_negative": False,
+            "invalid_label_values_found": False,
+            "invalid_label_policy": "raise_error",
+            "unknown_as_negative_risk": False,
+            "notes": [
+                "Transacoes sem label foram removidas via inner join.",
+                "Nenhuma transacao sem label foi convertida para classe 0.",
+                "Labels invalidos geram erro antes do treino.",
+            ],
             "warnings": warnings,
             "failures": failures,
             "by_split": by_split.to_dict(orient="records"),
@@ -163,11 +196,22 @@ class TargetAuditService:
             "# Target Audit",
             "",
             f"- Status: `{payload['status']}`",
+            f"- Target status: `{payload['target_status']}`",
+            f"- Target valido: `{payload['target_valid']}`",
+            f"- Warning de cobertura: `{payload['coverage_warning']}`",
             f"- Transacoes carregadas: {payload['transaction_count']}",
             f"- Labels conhecidos: {payload['known_label_count']}",
             f"- Linhas supervisionadas: {payload['supervised_row_count']}",
-            f"- Transacoes sem label: {payload['missing_label_count']}",
-            f"- Risco de desconhecido como negativo: `{payload['unknown_as_negative_risk']}`",
+            f"- Transacoes sem label removidas: {payload['missing_transaction_labels_count']}",
+            f"- Labels orfaos: {payload['orphan_label_count']}",
+            f"- Tipo de join supervisionado: `{payload['supervised_join_type']}`",
+            f"- Transacoes sem label: `{payload['unlabeled_transaction_policy']}`",
+            f"- Transacoes sem label convertidas para classe 0: `{payload['unlabeled_as_negative']}`",
+            f"- Labels invalidos: `{payload['invalid_label_policy']}`",
+            "",
+            "## Notes",
+            "",
+            *[f"- {note}" for note in payload.get("notes", [])],
             "",
             "## Warnings",
             "",

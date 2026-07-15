@@ -43,11 +43,11 @@ class MinioObjectStore(ObjectStore):
                 return False
             raise
 
-    def read_csv(self, key: str) -> pd.DataFrame:
+    def read_csv(self, key: str, nrows: int | None = None) -> pd.DataFrame:
         """Read a CSV object into a dataframe."""
         response = self.client.get_object(self.bucket, key)
         try:
-            return pd.read_csv(BytesIO(response.read()))
+            return pd.read_csv(BytesIO(response.read()), nrows=nrows)
         finally:
             response.close()
             response.release_conn()

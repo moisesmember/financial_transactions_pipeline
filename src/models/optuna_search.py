@@ -21,6 +21,65 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def temporal_selection_score(
+    window_results: list[dict[str, Any]],
+    pr_auc_stability_penalty: float,
+    recall_stability_penalty: float,
+    last_window_penalty: float,
+) -> dict[str, float]:
+    """Score temporal robustness using worst-window performance over averages."""
+    completed = [item for item in window_results if item.get("metrics")]
+    if not completed:
+        return {
+            "selection_score": float("-inf"),
+            "min_temporal_pr_auc": 0.0,
+            "min_temporal_recall": 0.0,
+            "mean_temporal_pr_auc": 0.0,
+            "mean_temporal_recall": 0.0,
+            "temporal_pr_auc_range": 0.0,
+            "temporal_recall_range": 0.0,
+            "stability_penalty": 0.0,
+            "last_window_penalty": 0.0,
+            "last_window_pr_auc": 0.0,
+            "last_window_recall": 0.0,
+        }
+    pr_aucs = np.array([float(item["pr_auc"]) for item in completed], dtype=float)
+    recalls = np.array([float(item["metrics"]["recall"]) for item in completed], dtype=float)
+    pr_auc_range = float(pr_aucs.max() - pr_aucs.min()) if len(pr_aucs) else 0.0
+    recall_range = float(recalls.max() - recalls.min()) if len(recalls) else 0.0
+    stability_penalty = (
+        pr_auc_stability_penalty * pr_auc_range
+        + recall_stability_penalty * recall_range
+    )
+    last_pr_auc = float(pr_aucs[-1])
+    last_recall = float(recalls[-1])
+    median_pr_auc = float(np.median(pr_aucs))
+    median_recall = float(np.median(recalls))
+    last_penalty = last_window_penalty * (
+        max(0.0, median_pr_auc - last_pr_auc)
+        + max(0.0, median_recall - last_recall)
+    )
+    selection_score = (
+        float(pr_aucs.min())
+        + float(recalls.min())
+        - stability_penalty
+        - last_penalty
+    )
+    return {
+        "selection_score": selection_score,
+        "min_temporal_pr_auc": float(pr_aucs.min()),
+        "min_temporal_recall": float(recalls.min()),
+        "mean_temporal_pr_auc": float(pr_aucs.mean()),
+        "mean_temporal_recall": float(recalls.mean()),
+        "temporal_pr_auc_range": pr_auc_range,
+        "temporal_recall_range": recall_range,
+        "stability_penalty": stability_penalty,
+        "last_window_penalty": last_penalty,
+        "last_window_pr_auc": last_pr_auc,
+        "last_window_recall": last_recall,
+    }
+
+
 @dataclass(frozen=True)
 class ModelSelectionResult:
     """Selected pipeline and reproducible Optuna study metadata."""
@@ -131,12 +190,14 @@ class OptunaModelSelector:
                     }
                 )
             validation_result = window_results[-1]
-            pr_aucs = np.array([item["pr_auc"] for item in window_results], dtype=float)
-            pr_auc_range = float(pr_aucs.max() - pr_aucs.min()) if len(pr_aucs) else 0.0
-            mean_pr_auc = float(pr_aucs.mean()) if len(pr_aucs) else 0.0
-            stability_penalty = self.settings.optuna_pr_auc_stability_penalty * pr_auc_range
+            temporal_score = temporal_selection_score(
+                window_results,
+                pr_auc_stability_penalty=self.settings.optuna_pr_auc_stability_penalty,
+                recall_stability_penalty=self.settings.optuna_recall_stability_penalty,
+                last_window_penalty=self.settings.optuna_last_window_penalty,
+            )
             if self.settings.optuna_selection_objective == "temporal_stability":
-                objective_value = mean_pr_auc - stability_penalty
+                objective_value = temporal_score["selection_score"]
             else:
                 objective_value = validation_result["pr_auc"]
             selected_threshold = validation_result["threshold"]
@@ -153,11 +214,8 @@ class OptunaModelSelector:
             )
             trial.set_user_attr("business_cost", metrics["business_cost"])
             trial.set_user_attr("validation_pr_auc", validation_result["pr_auc"])
-            trial.set_user_attr("mean_temporal_pr_auc", mean_pr_auc)
-            trial.set_user_attr("min_temporal_pr_auc", float(pr_aucs.min()))
-            trial.set_user_attr("max_temporal_pr_auc", float(pr_aucs.max()))
-            trial.set_user_attr("temporal_pr_auc_range", pr_auc_range)
-            trial.set_user_attr("stability_penalty", stability_penalty)
+            for name, value in temporal_score.items():
+                trial.set_user_attr(name, value)
             trial.set_user_attr(
                 "selection_windows",
                 json.dumps(
@@ -182,7 +240,7 @@ class OptunaModelSelector:
                 self.settings.optuna_selection_objective,
                 objective_value,
                 validation_result["pr_auc"],
-                pr_auc_range,
+                temporal_score["temporal_pr_auc_range"],
                 selected_threshold,
             )
             return objective_value
@@ -223,6 +281,8 @@ class OptunaModelSelector:
                     "seed": self.settings.random_state,
                     "temporal_holdout_fraction": self.settings.optuna_temporal_holdout_fraction,
                     "pr_auc_stability_penalty": self.settings.optuna_pr_auc_stability_penalty,
+                    "recall_stability_penalty": self.settings.optuna_recall_stability_penalty,
+                    "last_window_penalty": self.settings.optuna_last_window_penalty,
                     "configured_candidates": list(configured_candidates),
                     "available_candidates": list(available_candidates),
                     "unavailable_candidates": list(unavailable_candidates),
@@ -256,29 +316,35 @@ class OptunaModelSelector:
         """Build temporal windows used for model selection without touching test/OOT."""
         windows: list[dict[str, Any]] = []
         if self.settings.optuna_selection_objective == "temporal_stability":
-            holdout_start = int(len(X_train) * (1 - self.settings.optuna_temporal_holdout_fraction))
-            fit_X = X_train.iloc[:holdout_start]
-            fit_y = y_train.iloc[:holdout_start]
-            holdout_X = X_train.iloc[holdout_start:]
-            holdout_y = y_train.iloc[holdout_start:]
-            if (
-                len(fit_X) >= 20
-                and len(holdout_X) >= 10
-                and fit_y.nunique() >= 2
-                and holdout_y.nunique() >= 2
-            ):
-                windows.append(
-                    {
-                        "name": "train_tail_holdout",
-                        "X_train": fit_X,
-                        "y_train": fit_y,
-                        "X_validation": holdout_X,
-                        "y_validation": holdout_y,
-                    }
-                )
+            holdout_size = max(10, int(len(X_train) * self.settings.optuna_temporal_holdout_fraction))
+            fold_count = min(max(1, self.settings.walk_forward_folds - 1), 3)
+            for fold_index in range(fold_count):
+                train_end = len(X_train) - holdout_size * (fold_count - fold_index)
+                validation_end = train_end + holdout_size
+                if train_end <= 0 or validation_end > len(X_train):
+                    continue
+                fit_X = X_train.iloc[:train_end]
+                fit_y = y_train.iloc[:train_end]
+                holdout_X = X_train.iloc[train_end:validation_end]
+                holdout_y = y_train.iloc[train_end:validation_end]
+                if (
+                    len(fit_X) >= 20
+                    and len(holdout_X) >= 10
+                    and fit_y.nunique() >= 2
+                    and holdout_y.nunique() >= 2
+                ):
+                    windows.append(
+                        {
+                            "name": f"train_temporal_fold_{len(windows) + 1}",
+                            "X_train": fit_X,
+                            "y_train": fit_y,
+                            "X_validation": holdout_X,
+                            "y_validation": holdout_y,
+                        }
+                    )
         windows.append(
             {
-                "name": "validation",
+                "name": "official_validation_last_window",
                 "X_train": X_train,
                 "y_train": y_train,
                 "X_validation": X_validation,
@@ -505,10 +571,15 @@ class OptunaModelSelector:
                     "selection_score": trial.value,
                     "validation_pr_auc": trial.user_attrs.get("validation_pr_auc", trial.value),
                     "mean_temporal_pr_auc": trial.user_attrs.get("mean_temporal_pr_auc"),
+                    "mean_temporal_recall": trial.user_attrs.get("mean_temporal_recall"),
                     "min_temporal_pr_auc": trial.user_attrs.get("min_temporal_pr_auc"),
-                    "max_temporal_pr_auc": trial.user_attrs.get("max_temporal_pr_auc"),
+                    "min_temporal_recall": trial.user_attrs.get("min_temporal_recall"),
                     "temporal_pr_auc_range": trial.user_attrs.get("temporal_pr_auc_range"),
+                    "temporal_recall_range": trial.user_attrs.get("temporal_recall_range"),
                     "stability_penalty": trial.user_attrs.get("stability_penalty"),
+                    "last_window_penalty": trial.user_attrs.get("last_window_penalty"),
+                    "last_window_pr_auc": trial.user_attrs.get("last_window_pr_auc"),
+                    "last_window_recall": trial.user_attrs.get("last_window_recall"),
                     "selection_windows": trial.user_attrs.get("selection_windows"),
                     "model_name": trial.params.get("model_name"),
                     "model_params": json.dumps(trial.params, sort_keys=True),

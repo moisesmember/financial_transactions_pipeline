@@ -24,6 +24,7 @@ class BaselineDecisionService:
         drift_report: dict[str, Any] | None = None,
         robustness_report: dict[str, Any] | None = None,
         walk_forward_report: dict[str, Any] | None = None,
+        sampling_audit: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return reject/candidate/pending_review/approved with explicit reasons."""
         blocking_reasons: list[str] = []
@@ -41,6 +42,10 @@ class BaselineDecisionService:
         else:
             validation_pr_auc = float(validation["pr_auc"])
             oot_pr_auc = float(oot["pr_auc"])
+            if "tp" in oot and int(oot["tp"]) == 0:
+                blocking_reasons.append("TP out-of-time igual a zero.")
+            if float(oot.get("recall", 0.0)) == 0.0:
+                blocking_reasons.append("Recall out-of-time igual a zero.")
             relative_drop = (
                 (validation_pr_auc - oot_pr_auc) / validation_pr_auc
                 if validation_pr_auc > 0
@@ -80,16 +85,27 @@ class BaselineDecisionService:
         if leakage_report.get("warnings") and not self.settings.baseline_warning_justification:
             warning_reasons.append("Warnings da auditoria ainda nao possuem justificativa.")
 
+        if target_audit:
+            if target_audit.get("target_status") == "invalid":
+                blocking_reasons.append("Target audit classificou o target como invalido.")
+            if target_audit.get("unknown_labels_used_as_negative") or target_audit.get("unlabeled_as_negative"):
+                blocking_reasons.append("Transacoes sem label foram usadas como classe 0.")
+
         missing = [path.name for path in required_artifacts if not path.exists()]
         if missing:
             warning_reasons.append("Artefatos obrigatorios ausentes: " + ", ".join(sorted(missing)))
 
         self._apply_audit_gate("target audit", target_audit, blocking_reasons, warning_reasons)
+        if sampling_audit is not None:
+            self._apply_audit_gate(
+                "sampling audit", sampling_audit, blocking_reasons, warning_reasons
+            )
         self._apply_audit_gate("drift report", drift_report, blocking_reasons, warning_reasons)
         geo_ablation = (robustness_report or {}).get("geo_ablation")
         self._apply_audit_gate("geo ablation", geo_ablation, blocking_reasons, warning_reasons)
         if walk_forward_report and walk_forward_report.get("status") != "disabled":
             self._apply_audit_gate("walk-forward validation", walk_forward_report, blocking_reasons, warning_reasons)
+            self._apply_walk_forward_gate(walk_forward_report, blocking_reasons)
 
         baseline = self._load_current_baseline()
         if baseline:
@@ -137,6 +153,9 @@ class BaselineDecisionService:
                 "max_relative_oot_pr_auc_drop": self.settings.promotion_max_oot_pr_auc_drop,
                 "max_baseline_cost_increase": self.settings.promotion_max_cost_increase,
                 "min_oot_pr_auc_lift_over_random": self.settings.promotion_min_oot_pr_auc_lift,
+                "min_walk_forward_recall": self.settings.promotion_min_walk_forward_recall,
+                "min_walk_forward_pr_auc_lift_over_random": self.settings.promotion_min_walk_forward_pr_auc_lift,
+                "max_walk_forward_recall_drop": self.settings.promotion_max_walk_forward_recall_drop,
                 "human_approval_required_for_warnings": True,
             },
             "metrics_summary": {
@@ -145,6 +164,10 @@ class BaselineDecisionService:
                 "out_of_time_pr_auc": (metadata.get("out_of_time_metrics") or {}).get("pr_auc"),
                 "validation_recall": metadata["validation_metrics"].get("recall"),
                 "out_of_time_recall": (metadata.get("out_of_time_metrics") or {}).get("recall"),
+                "last_fold_recall": (walk_forward_report or {}).get("summary", {}).get("last_fold_recall"),
+                "min_fold_recall": (walk_forward_report or {}).get("summary", {}).get("min_recall_fold"),
+                "last_fold_pr_auc": (walk_forward_report or {}).get("summary", {}).get("last_fold_pr_auc"),
+                "min_fold_pr_auc": (walk_forward_report or {}).get("summary", {}).get("min_pr_auc_fold"),
             },
         }
 
@@ -163,6 +186,18 @@ class BaselineDecisionService:
             blocking_reasons.append(f"{name} possui falhas bloqueantes.")
         elif status == "warning":
             warning_reasons.append(f"{name} possui warnings pendentes.")
+
+    @staticmethod
+    def _apply_walk_forward_gate(
+        payload: dict[str, Any],
+        blocking_reasons: list[str],
+    ) -> None:
+        summary = payload.get("summary") or {}
+        if payload.get("status") == "fail":
+            blocking_reasons.append("Walk-forward falhou em gates temporais criticos.")
+        for reason in summary.get("failure_reasons", []):
+            if reason not in blocking_reasons:
+                blocking_reasons.append(reason)
 
     @staticmethod
     def _next_actions(

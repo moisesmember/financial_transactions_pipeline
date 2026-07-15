@@ -401,22 +401,59 @@ AutoGluon e H2O são recomendados em Linux/WSL; H2O também requer uma JVM
 compatível. Uma dependência ausente é registrada como `unavailable` e não
 interrompe o treino principal.
 
-Por padrão, `python main.py` limita a `500000` as transações usadas no merge e
-no treino, evitando esgotar a memória nas etapas mais pesadas em ambientes
-locais. Ajuste no `.env` conforme a RAM disponível:
+Por padrão, o carregamento bruto é completo e o limite local é aplicado apenas
+ao split de treino, depois do `inner join` com labels e do split temporal. Todos
+os positivos conhecidos são preservados; somente negativos são amostrados de
+forma estratificada por mês:
 
 ```bash
-TRAINING_MAX_ROWS=200000
+RAW_DATA_MAX_ROWS=0
+TRAINING_MAX_ROWS=600000
+PRESERVE_ALL_POSITIVES=true
+NEGATIVE_SAMPLING_ENABLED=true
+NEGATIVE_SAMPLING_STRATEGY=temporal_stratified
+NEGATIVE_SAMPLING_BY=month
+NEGATIVE_TO_POSITIVE_RATIO=100
 ```
 
-Para tentar processar o dataset completo, sem limite:
+Para treinar com o dataset supervisionado completo, sem amostragem:
 
 ```bash
+RAW_DATA_MAX_ROWS=0
 TRAINING_MAX_ROWS=0
 ```
 
-O dataset completo exige significativamente mais memória e pode não ser
-adequado para treinamento local com scikit-learn.
+`RAW_DATA_MAX_ROWS` também aceita um limite explícito para diagnóstico, mas uma
+rodada assim não representa o range bruto completo. Validation, test e
+out-of-time nunca são reduzidos por `TRAINING_MAX_ROWS`. Se o número de
+positivos do treino for maior que o limite, a pipeline falha em vez de remover
+fraudes conhecidas.
+
+### Comparar a correção de amostragem
+
+Use o mesmo código, seed e configuração de modelo em todas as novas rodadas.
+A rodada A deve ser um `run_id` histórico produzido antes da correção; a
+pipeline atual não oferece modo sequencial porque essa estratégia é inválida.
+
+| Rodada | Configuração |
+|---|---|
+| A — legado sequencial | run histórico com o antigo corte cronológico |
+| B — supervisionado completo | `TRAINING_MAX_ROWS=0` |
+| C — positivos + negativos por mês | `TRAINING_MAX_ROWS=600000`, `NEGATIVE_TO_POSITIVE_RATIO=0` |
+| D — mensal 1:100 | `TRAINING_MAX_ROWS=600000`, `NEGATIVE_TO_POSITIVE_RATIO=100` |
+| E — mensal 1:200 | `TRAINING_MAX_ROWS=600000`, `NEGATIVE_TO_POSITIVE_RATIO=200` |
+
+Em todas as rodadas novas mantenha `RAW_DATA_MAX_ROWS=0`,
+`PRESERVE_ALL_POSITIVES=true`, `NEGATIVE_SAMPLING_ENABLED=true` e
+`NEGATIVE_SAMPLING_BY=month`. Execute `python main.py` após cada alteração e
+compare o histórico com:
+
+```bash
+python scripts/list_training_history.py --limit 10
+```
+
+`NEGATIVE_TO_POSITIVE_RATIO=0` desativa somente o teto por razão; o orçamento
+de `TRAINING_MAX_ROWS` continua sendo distribuído entre os meses.
 
 ## Avaliação, threshold e baseline
 
@@ -424,12 +461,21 @@ Cada treinamento gera:
 
 - `artifacts/target_audit.json`, `target_audit.md`,
   `target_audit_by_split.csv` e `target_audit_by_period.csv`: auditoria de
-  labels, cobertura temporal, duplicidades e risco de tratar transações sem
-  label como negativas.
+  labels, cobertura temporal e duplicidades. Transacoes sem label sao removidas
+  do treino supervisionado via `inner join`; nenhuma e convertida para classe 0,
+  e labels invalidos geram erro antes do treino.
+- `artifacts/sampling_audit.json`, `sampling_audit.md`,
+  `sampling_by_period.csv`, `sampling_by_split.csv` e
+  `sampling_positive_coverage.csv`: comprovam o estágio da amostragem, a
+  cobertura positiva, o range temporal e que os splits de avaliação ficaram
+  intactos.
 - `artifacts/data_drift_report.json`, `data_drift_report.md`,
   `data_drift_numeric.csv` e `data_drift_categorical.csv`: comparação de
   distribuição entre treino, validação, teste e out-of-time, com PSI/KS quando
   aplicável.
+- `artifacts/feature_stability_report.json` e `feature_stability_report.md`:
+  ranking de PSI por feature/split, features com drift alto e recomendacao de
+  manter, transformar ou remover em nova rodada.
 - `artifacts/robustness_report.json`, `robustness_report.md`,
   `geo_ablation_report.json` e `geo_ablation_report.md`: experimentos de
   robustez e ablação geográfica, incluindo variantes sem coordenadas, sem
@@ -459,8 +505,8 @@ Cada treinamento gera:
   `calibration_metrics.json` e `calibration_curve.png`: calibração dos scores.
 - `artifacts/out_of_time_metrics.json`: avaliação da janela futura intocada.
 - `artifacts/model_card.md`: documentação automática da execução.
-- `artifacts/baseline_decision.json`: decisão `promote`, `keep_candidate` ou
-  `reject`, com os motivos.
+- `artifacts/baseline_decision.json`: decisao `approved`, `candidate`,
+  `pending_review` ou `reject`, com os motivos.
 - `artifacts/manifest.json`: hashes e tamanhos dos artefatos obrigatórios.
 - `artifacts/model_metadata.joblib`: métricas e configuração operacional.
 - `artifacts/history/<run_id>/`: cópia imutável dos metadados, auditoria,
@@ -497,9 +543,10 @@ Por padrão, Optuna compara `logistic_regression`, `random_forest` e
 e `catboost`. Instale `requirements-models.txt`, conforme a sequência da seção
 `Como executar`, antes de incluí-los na busca.
 
-O objetivo é maximizar PR-AUC na validação temporal.
-Cada trial também registra precision, recall, alert rate, custo e o threshold
-de menor custo. Teste e OOT nunca participam da busca.
+Com `OPTUNA_SELECTION_OBJECTIVE=temporal_stability`, o objetivo prioriza
+robustez temporal: pior PR-AUC entre janelas, pior recall, penalidade por
+instabilidade e penalidade quando a ultima janela desaba. Teste e OOT nunca
+participam da busca.
 
 ```bash
 MODEL_SELECTION_ENGINE=optuna
@@ -510,12 +557,15 @@ OPTUNA_N_JOBS=1
 OPTUNA_SELECTION_OBJECTIVE=temporal_stability
 OPTUNA_TEMPORAL_HOLDOUT_FRACTION=0.20
 OPTUNA_PR_AUC_STABILITY_PENALTY=0.50
+OPTUNA_RECALL_STABILITY_PENALTY=0.50
+OPTUNA_LAST_WINDOW_PENALTY=1.00
 ```
 
 Com `OPTUNA_SELECTION_OBJECTIVE=temporal_stability`, cada trial tambem e
-avaliado em uma janela temporal no fim do treino e recebe penalidade quando a
-PR-AUC varia muito entre essa janela e a validacao oficial. Isso reduz a chance
-de escolher um modelo que apenas explora a validacao tradicional.
+avaliado em janelas temporais internas e na validacao oficial. O pior periodo
+pesa mais do que a media, e a ultima janela recebe penalidade propria quando
+recall ou PR-AUC caem. Isso reduz a chance de escolher um modelo que apenas
+explora a validacao tradicional.
 
 Use `OPTUNA_N_JOBS=1` para maior reprodutibilidade e controle de memória. Uma
 dependência opcional ausente faz somente aquele candidato ser ignorado, com um
@@ -617,6 +667,10 @@ PROMOTION_MAX_ALERT_RATE=0.025
 PROMOTION_MAX_OOT_PR_AUC_DROP=0.15
 PROMOTION_MAX_COST_INCREASE=0.05
 PROMOTION_MIN_OOT_PR_AUC_LIFT=1.0
+PROMOTION_MIN_WALK_FORWARD_RECALL=0.05
+PROMOTION_MIN_WALK_FORWARD_PR_AUC_LIFT=1.0
+PROMOTION_MAX_WALK_FORWARD_RECALL_DROP=0.50
+FEATURE_STABILITY_PSI_THRESHOLD=0.25
 BASELINE_WARNING_JUSTIFICATION=
 ```
 
@@ -663,6 +717,22 @@ Com o ambiente virtual ativado, instale as dependências do projeto:
 
 ```bash
 pip install -U -r requirements.txt
+python -m pip install -U -r requirements.txt
+```
+
+Se o ambiente já tiver o pacote descontinuado `ydata-profiling`, substitua-o
+pelo `fg-data-profiling` e instale o suporte a widgets do Jupyter:
+
+```bash
+pip uninstall ydata-profiling
+pip install ipywidgets
+pip install fg-data-profiling
+```
+
+Para gerar relatórios de perfilamento, use o novo namespace do pacote:
+
+```python
+from data_profiling import ProfileReport
 ```
 
 Inicie o JupyterLab na raiz do projeto:
@@ -717,7 +787,13 @@ curl -X POST "http://localhost:8000/training-runs" \
     "BASELINE_OVERWRITE": false,
     "RUN_GEO_ABLATION": false,
     "TRAINING_HISTORY_SAVE_PIPELINE": true,
-    "TRAINING_MAX_ROWS": 500000,
+    "RAW_DATA_MAX_ROWS": 0,
+    "TRAINING_MAX_ROWS": 600000,
+    "PRESERVE_ALL_POSITIVES": true,
+    "NEGATIVE_SAMPLING_ENABLED": true,
+    "NEGATIVE_SAMPLING_STRATEGY": "temporal_stratified",
+    "NEGATIVE_SAMPLING_BY": "month",
+    "NEGATIVE_TO_POSITIVE_RATIO": 100,
     "BASELINE_WARNING_JUSTIFICATION": "",
     "PROMOTION_MIN_RECALL": 0.90,
     "PROMOTION_MAX_ALERT_RATE": 0.025,
@@ -734,6 +810,13 @@ curl "http://localhost:8000/training-runs/JOB_ID"
 
 Todos os campos do body são opcionais. Campos ausentes ou `null` mantêm os
 valores resolvidos do `.env`; `TRAINING_MAX_ROWS=0` processa o dataset completo.
+Quando existe limite, ele e aplicado somente depois do inner join e do split
+temporal: todos os positivos do treino sao preservados e apenas negativos sao
+amostrados por mes. Validacao, teste e out-of-time nao sao reduzidos. Use
+`NEGATIVE_TO_POSITIVE_RATIO=100` para controlar a razão máxima global de
+negativos por positivo; o orçamento resultante é distribuído entre os períodos.
+Se os positivos sozinhos excederem `TRAINING_MAX_ROWS`, a execução falha e
+nenhum positivo é removido.
 Os nomes também podem ser enviados em `snake_case`. Apenas um treinamento pode
 executar por processo da API. Cada job usa staging isolado em
 `.runtime/training/<job_id>` para não disputar arquivos com a inferência. Em

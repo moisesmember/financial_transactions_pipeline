@@ -7,6 +7,7 @@ import pytest
 
 from src.config.settings import Settings
 from src.data.limit_data import TrainingDataLimiter
+from src.data.load_data import RawDataRepository
 from src.data.merge_data import FraudDataMerger
 from src.data.split_data import TemporalSplitter
 
@@ -37,7 +38,52 @@ def test_merge_adds_labels_and_mcc() -> None:
     assert "mcc_description" in merged.columns
 
 
-def test_merge_rejects_unknown_label_values() -> None:
+def test_raw_data_max_rows_is_separate_from_training_limit(tmp_path) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    (raw_dir / "transactions_data.csv").write_text(
+        "id,date,amount\n1,2020-01-01,10\n2,2020-01-02,20\n3,2020-01-03,30\n",
+        encoding="utf-8",
+    )
+    settings = Settings(
+        project_root=tmp_path,
+        raw_data_dir=raw_dir,
+        storage_backend="local",
+        keep_local_raw_data=True,
+        keep_local_artifacts=True,
+        raw_data_max_rows=2,
+        training_max_rows=1,
+    )
+
+    loaded = RawDataRepository(settings).load_transactions()
+
+    assert loaded["id"].tolist() == [1, 2]
+
+
+def test_merge_uses_inner_join_for_unlabeled_transactions() -> None:
+    settings = Settings()
+    transactions = pd.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "date": ["2020-01-01", "2020-01-02", "2020-01-03"],
+            "amount": [10.0, 20.0, 30.0],
+        }
+    )
+
+    merged = FraudDataMerger(settings).merge(
+        transactions,
+        pd.DataFrame(),
+        pd.DataFrame(),
+        {},
+        {"target": {"1": "No", "2": "Yes"}},
+    )
+
+    assert merged["transaction_id"].tolist() == ["1", "2"]
+    assert merged[settings.target_column].tolist() == [0, 1]
+
+
+@pytest.mark.parametrize("bad_label", [None, "", float("nan"), "unknown"])
+def test_merge_rejects_unknown_label_values(bad_label) -> None:
     settings = Settings()
     transactions = pd.DataFrame(
         {
@@ -53,7 +99,7 @@ def test_merge_rejects_unknown_label_values() -> None:
             pd.DataFrame(),
             pd.DataFrame(),
             {},
-            {"target": {"1": "No", "2": None}},
+            {"target": {"1": "No", "2": bad_label}},
         )
 
 
@@ -94,25 +140,68 @@ def test_temporal_split_keeps_equal_timestamps_in_same_partition() -> None:
     assert splits.validation["date"].max() < splits.test["date"].min()
 
 
-def test_training_data_limiter_preserves_source_order() -> None:
-    """Training row limits should be applied before expensive processing."""
-    transactions = pd.DataFrame({"id": range(10), "amount": range(10)})
-
-    limited = TrainingDataLimiter(max_rows=4).apply(transactions)
-
-    assert limited["id"].tolist() == [0, 1, 2, 3]
-    assert len(transactions) == 10
-
-
-def test_training_data_limiter_preserves_full_time_horizon() -> None:
-    transactions = pd.DataFrame(
+def test_training_data_limiter_preserves_every_positive_and_only_samples_negatives() -> None:
+    training = pd.DataFrame(
         {
-            "id": range(10),
-            "date": pd.date_range("2020-01-01", periods=10, freq="D"),
+            "id": range(12),
+            "date": pd.date_range("2020-01-01", periods=12, freq="MS"),
+            "is_fraud": [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0],
         }
     )
 
-    limited = TrainingDataLimiter(max_rows=4).apply(transactions)
+    limited = TrainingDataLimiter(max_rows=7, negative_positive_ratio=2).apply(training)
 
-    assert limited["date"].min() == transactions["date"].min()
-    assert limited["date"].max() == transactions["date"].max()
+    assert set(training.loc[training["is_fraud"].eq(1), "id"]) <= set(limited["id"])
+    assert int(limited["is_fraud"].sum()) == 4
+    assert len(limited) == 7
+
+
+def test_training_data_limiter_distributes_ratio_budget_across_months() -> None:
+    dates = [pd.Timestamp("2020-01-01")] * 12 + [pd.Timestamp("2020-02-01")] * 8
+    training = pd.DataFrame(
+        {
+            "id": range(20),
+            "date": dates,
+            "is_fraud": [1, 1] + [0] * 10 + [1] + [0] * 7,
+        }
+    )
+
+    limited = TrainingDataLimiter(max_rows=None, negative_positive_ratio=2).apply(training)
+    monthly = limited.assign(month=limited["date"].dt.to_period("M")).groupby("month")["is_fraud"]
+
+    assert monthly.sum().to_dict() == {
+        pd.Period("2020-01", freq="M"): 2,
+        pd.Period("2020-02", freq="M"): 1,
+    }
+    monthly_sizes = limited.groupby(limited["date"].dt.to_period("M")).size()
+    assert int(limited["is_fraud"].eq(0).sum()) == 6
+    assert set(monthly_sizes.index) == {
+        pd.Period("2020-01", freq="M"),
+        pd.Period("2020-02", freq="M"),
+    }
+
+
+def test_training_data_limiter_rejects_limit_below_positive_count() -> None:
+    training = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=5, freq="D"),
+            "is_fraud": [1, 1, 1, 1, 0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="menor que o numero de positivos"):
+        TrainingDataLimiter(max_rows=2).apply(training)
+
+
+def test_training_data_limiter_zero_returns_complete_supervised_training() -> None:
+    training = pd.DataFrame(
+        {
+            "date": pd.date_range("2020-01-01", periods=10, freq="D"),
+            "is_fraud": [1] + [0] * 9,
+        }
+    )
+
+    complete = TrainingDataLimiter(max_rows=0, negative_positive_ratio=1).apply(training)
+
+    assert len(complete) == len(training)
+    assert int(complete["is_fraud"].sum()) == 1

@@ -77,6 +77,7 @@ def write_model_review_report(
     leakage_report: dict[str, Any],
     decision: dict[str, Any],
     target_audit: dict[str, Any] | None,
+    sampling_audit: dict[str, Any] | None,
     drift_report: dict[str, Any] | None,
     robustness_report: dict[str, Any] | None,
     walk_forward_report: dict[str, Any] | None,
@@ -94,6 +95,7 @@ def write_model_review_report(
         f"- Selected threshold: {metadata['threshold']:.6f}",
         f"- Leakage audit: `{leakage_report.get('status')}`",
         f"- Target audit: `{(target_audit or {}).get('status', 'not_available')}`",
+        f"- Sampling audit: `{(sampling_audit or {}).get('status', 'not_available')}`",
         f"- Drift report: `{(drift_report or {}).get('status', 'not_available')}`",
         "",
         "## 2. Selected Model",
@@ -139,35 +141,41 @@ def write_model_review_report(
             "",
             *_section_status_lines(target_audit),
             "",
-            "## 8. Geographic Ablation",
+            "## Sampling Audit",
+            "",
+            *_sampling_audit_lines(sampling_audit),
+            "",
+            "## 9. Geographic Ablation",
             "",
             *_section_status_lines((robustness_report or {}).get("geo_ablation")),
             "",
-            "## 9. Data Drift",
+            "## 10. Data Drift",
             "",
             *_section_status_lines(drift_report),
+            "- See feature_stability_report.json and feature_stability_report.md for PSI by feature and keep/transform/remove recommendations.",
             "",
-            "## 10. Threshold Analysis",
+            "## 11. Threshold Analysis",
             "",
+            "- Threshold ajusta o trade-off entre recall, precision, alert rate e custo; nao corrige score ruim, drift ou overfitting temporal.",
             *_threshold_lines(threshold_recommendations),
             "",
-            "## 11. Walk-Forward Validation",
+            "## 12. Walk-Forward Validation",
             "",
             *_section_status_lines(walk_forward_report),
             "",
-            "## 12. Calibration",
+            "## 13. Calibration",
             "",
             "- See calibration artifacts: calibration_report.csv, score_deciles.csv and calibration_curve.png.",
             "",
-            "## 13. Score Deciles",
+            "## 14. Score Deciles",
             "",
             "- See score_deciles.csv for score concentration and positive rate by decile.",
             "",
-            "## 14. Conclusion",
+            "## 15. Conclusion",
             "",
             f"`{decision['decision']}`",
             "",
-            "## 15. Next Actions",
+            "## 16. Next Actions",
             "",
             *[f"- {action}" for action in decision.get("next_actions", [])],
         ]
@@ -199,8 +207,48 @@ def _section_status_lines(payload: dict[str, Any] | None) -> list[str]:
     if not payload:
         return ["- Not available."]
     lines = [f"- Status: `{payload.get('status')}`"]
+    lines.extend(f"- Note: {note}" for note in payload.get("notes", []))
+    summary = payload.get("summary") or {}
+    if summary:
+        for key in (
+            "best_fold",
+            "worst_fold",
+            "min_recall_fold",
+            "min_pr_auc_fold",
+            "last_fold_recall",
+            "last_fold_pr_auc",
+            "last_fold_penalty",
+            "recall_drop_best_to_worst",
+        ):
+            if key in summary:
+                lines.append(f"- {key}: {summary.get(key)}")
     lines.extend(f"- Warning: {warning}" for warning in payload.get("warnings", []))
     lines.extend(f"- Failure: {failure}" for failure in payload.get("failures", []))
+    return lines
+
+
+def _sampling_audit_lines(payload: dict[str, Any] | None) -> list[str]:
+    if not payload:
+        return ["- Not available."]
+    before = payload.get("training_before_sampling") or {}
+    after = payload.get("training_after_sampling") or {}
+    lines = [
+        f"- Status: `{payload.get('status')}`",
+        f"- Dataset limitado: `{payload.get('training_limit_applied')}`",
+        f"- Limite aplicado em: `{payload.get('training_limit_applied_stage')}`",
+        f"- Positivos preservados: `{payload.get('positives_preserved_pct')}`",
+        f"- Positivos antes/depois: {before.get('positive_count')} / {after.get('positive_count')}",
+        f"- Range temporal preservado: `{payload.get('temporal_range_preserved')}`",
+        f"- Amostragem sequencial: `{payload.get('sequential_training_limit_detected')}`",
+        f"- Estrategia de negativos: `{payload.get('negative_sampling_strategy')}` por `{payload.get('negative_sampling_by')}`",
+        f"- Rodada confiavel: `{payload.get('sampling_reliable')}`",
+    ]
+    lines.extend(f"- Warning: {item}" for item in payload.get("warnings", []))
+    lines.extend(f"- Failure: {item}" for item in payload.get("failures", []))
+    if payload.get("sequential_training_limit_detected"):
+        lines.append(
+            "- A rodada nao e confiavel para avaliacao temporal, pois o limite de linhas produziu vies temporal."
+        )
     return lines
 
 

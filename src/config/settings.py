@@ -48,6 +48,15 @@ def _env_optional_positive_int(name: str, default: int | None = None) -> int | N
     return parsed
 
 
+def _env_nonnegative_int(name: str, default: int = 0) -> int:
+    """Parse an integer where zero explicitly means unlimited."""
+    value = os.getenv(name)
+    parsed = default if value is None or not value.strip() else int(value.strip())
+    if parsed < 0:
+        raise ValueError(f"{name} deve ser um inteiro positivo ou 0.")
+    return parsed
+
+
 def _env_float(name: str, default: float) -> float:
     """Parse a floating-point environment variable."""
     value = os.getenv(name)
@@ -107,6 +116,12 @@ class Settings:
     )
     optuna_pr_auc_stability_penalty: float = field(
         default_factory=lambda: _env_float("OPTUNA_PR_AUC_STABILITY_PENALTY", 0.50)
+    )
+    optuna_recall_stability_penalty: float = field(
+        default_factory=lambda: _env_float("OPTUNA_RECALL_STABILITY_PENALTY", 0.50)
+    )
+    optuna_last_window_penalty: float = field(
+        default_factory=lambda: _env_float("OPTUNA_LAST_WINDOW_PENALTY", 1.00)
     )
     external_benchmarks_enabled: bool = field(
         default_factory=lambda: _env_bool_alias(
@@ -193,6 +208,15 @@ class Settings:
     promotion_min_oot_pr_auc_lift: float = field(
         default_factory=lambda: _env_float("PROMOTION_MIN_OOT_PR_AUC_LIFT", 1.0)
     )
+    promotion_min_walk_forward_recall: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MIN_WALK_FORWARD_RECALL", 0.05)
+    )
+    promotion_min_walk_forward_pr_auc_lift: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MIN_WALK_FORWARD_PR_AUC_LIFT", 1.0)
+    )
+    promotion_max_walk_forward_recall_drop: float = field(
+        default_factory=lambda: _env_float("PROMOTION_MAX_WALK_FORWARD_RECALL_DROP", 0.50)
+    )
     dataset_version_override: str | None = field(default_factory=lambda: os.getenv("DATASET_VERSION"))
     feature_set_version: str = field(
         default_factory=lambda: os.getenv("FEATURE_SET_VERSION", "v1")
@@ -217,8 +241,29 @@ class Settings:
     categorical_min_frequency: int = field(
         default_factory=lambda: int(os.getenv("CATEGORICAL_MIN_FREQUENCY", "10"))
     )
+    raw_data_max_rows: int = field(
+        default_factory=lambda: _env_nonnegative_int("RAW_DATA_MAX_ROWS", 0)
+    )
     training_max_rows: int | None = field(
-        default_factory=lambda: _env_optional_positive_int("TRAINING_MAX_ROWS", 500_000)
+        default_factory=lambda: _env_nonnegative_int("TRAINING_MAX_ROWS", 500_000)
+    )
+    preserve_all_positives: bool = field(
+        default_factory=lambda: _env_bool("PRESERVE_ALL_POSITIVES", True)
+    )
+    negative_sampling_enabled: bool = field(
+        default_factory=lambda: _env_bool("NEGATIVE_SAMPLING_ENABLED", True)
+    )
+    negative_sampling_strategy: str = field(
+        default_factory=lambda: os.getenv("NEGATIVE_SAMPLING_STRATEGY", "temporal_stratified")
+    )
+    negative_sampling_by: str = field(
+        default_factory=lambda: os.getenv("NEGATIVE_SAMPLING_BY", "month")
+    )
+    training_negative_positive_ratio: int | None = field(
+        default_factory=lambda: _env_optional_positive_int(
+            "NEGATIVE_TO_POSITIVE_RATIO",
+            _env_optional_positive_int("TRAINING_NEGATIVE_POSITIVE_RATIO", 100),
+        )
     )
     target_column: str = "is_fraud"
     pipeline_filename: str = "fraud_pipeline.joblib"
@@ -244,14 +289,25 @@ class Settings:
     target_audit_markdown_filename: str = "target_audit.md"
     target_audit_by_split_filename: str = "target_audit_by_split.csv"
     target_audit_by_period_filename: str = "target_audit_by_period.csv"
+    sampling_audit_filename: str = "sampling_audit.json"
+    sampling_audit_markdown_filename: str = "sampling_audit.md"
+    sampling_by_period_filename: str = "sampling_by_period.csv"
+    sampling_by_split_filename: str = "sampling_by_split.csv"
+    sampling_positive_coverage_filename: str = "sampling_positive_coverage.csv"
     data_drift_report_filename: str = "data_drift_report.json"
     data_drift_markdown_filename: str = "data_drift_report.md"
     data_drift_numeric_filename: str = "data_drift_numeric.csv"
     data_drift_categorical_filename: str = "data_drift_categorical.csv"
+    feature_stability_report_filename: str = "feature_stability_report.json"
+    feature_stability_markdown_filename: str = "feature_stability_report.md"
+    feature_stability_psi_threshold: float = field(
+        default_factory=lambda: _env_float("FEATURE_STABILITY_PSI_THRESHOLD", 0.25)
+    )
     walk_forward_report_filename: str = "walk_forward_report.json"
     walk_forward_markdown_filename: str = "walk_forward_report.md"
     model_review_report_filename: str = "model_review_report.md"
     threshold_recommendations_filename: str = "threshold_recommendations.json"
+    error_attribution_report_filename: str = "error_attribution_report.json"
     optuna_trials_filename: str = "optuna_trials.csv"
     optuna_study_filename: str = "optuna_study.json"
     external_benchmark_filename: str = "external_benchmark_results.csv"
@@ -380,6 +436,16 @@ class Settings:
             "optuna_selection_objective",
             self.optuna_selection_objective.strip().lower(),
         )
+        object.__setattr__(
+            self,
+            "negative_sampling_strategy",
+            self.negative_sampling_strategy.strip().lower(),
+        )
+        object.__setattr__(
+            self,
+            "negative_sampling_by",
+            self.negative_sampling_by.strip().lower(),
+        )
         if self.mlflow_tracking_uri is None or not self.mlflow_tracking_uri.strip():
             object.__setattr__(
                 self,
@@ -437,6 +503,10 @@ class Settings:
             raise ValueError("OPTUNA_TEMPORAL_HOLDOUT_FRACTION deve estar entre 0 e 0.5.")
         if self.optuna_pr_auc_stability_penalty < 0:
             raise ValueError("OPTUNA_PR_AUC_STABILITY_PENALTY nao pode ser negativo.")
+        if self.optuna_recall_stability_penalty < 0:
+            raise ValueError("OPTUNA_RECALL_STABILITY_PENALTY nao pode ser negativo.")
+        if self.optuna_last_window_penalty < 0:
+            raise ValueError("OPTUNA_LAST_WINDOW_PENALTY nao pode ser negativo.")
         if self.external_benchmark_time_limit_seconds < 1:
             raise ValueError("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS deve ser positivo.")
         if self.external_benchmark_max_models < 1:
@@ -484,6 +554,36 @@ class Settings:
             raise ValueError("PROMOTION_MAX_COST_INCREASE nao pode ser negativo.")
         if self.promotion_min_oot_pr_auc_lift < 0:
             raise ValueError("PROMOTION_MIN_OOT_PR_AUC_LIFT nao pode ser negativo.")
+        if not 0 <= self.promotion_min_walk_forward_recall <= 1:
+            raise ValueError("PROMOTION_MIN_WALK_FORWARD_RECALL deve estar entre 0 e 1.")
+        if self.promotion_min_walk_forward_pr_auc_lift < 0:
+            raise ValueError("PROMOTION_MIN_WALK_FORWARD_PR_AUC_LIFT nao pode ser negativo.")
+        if not 0 <= self.promotion_max_walk_forward_recall_drop <= 1:
+            raise ValueError("PROMOTION_MAX_WALK_FORWARD_RECALL_DROP deve estar entre 0 e 1.")
+        if self.feature_stability_psi_threshold < 0:
+            raise ValueError("FEATURE_STABILITY_PSI_THRESHOLD nao pode ser negativo.")
+        if self.raw_data_max_rows < 0:
+            raise ValueError("RAW_DATA_MAX_ROWS deve ser zero ou positivo.")
+        if self.training_max_rows is not None and self.training_max_rows < 0:
+            raise ValueError("TRAINING_MAX_ROWS deve ser zero, positivo ou None.")
+        if not self.preserve_all_positives:
+            raise ValueError("PRESERVE_ALL_POSITIVES deve permanecer true para treino governado.")
+        if self.negative_sampling_strategy != "temporal_stratified":
+            raise ValueError(
+                "NEGATIVE_SAMPLING_STRATEGY deve ser 'temporal_stratified'."
+            )
+        if self.negative_sampling_by not in {"month", "year"}:
+            raise ValueError("NEGATIVE_SAMPLING_BY deve ser 'month' ou 'year'.")
+        if (
+            self.training_negative_positive_ratio is not None
+            and self.training_negative_positive_ratio < 1
+        ):
+            raise ValueError("NEGATIVE_TO_POSITIVE_RATIO deve ser pelo menos 1.")
+        if not self.negative_sampling_enabled and self.training_max_rows not in {None, 0}:
+            raise ValueError(
+                "TRAINING_MAX_ROWS exige NEGATIVE_SAMPLING_ENABLED=true; "
+                "limite sequencial nao e permitido."
+            )
         object.__setattr__(self, "threshold_selection_strategy", strategy)
 
     @property
@@ -556,14 +656,22 @@ class Settings:
             self.target_audit_markdown_filename,
             self.target_audit_by_split_filename,
             self.target_audit_by_period_filename,
+            self.sampling_audit_filename,
+            self.sampling_audit_markdown_filename,
+            self.sampling_by_period_filename,
+            self.sampling_by_split_filename,
+            self.sampling_positive_coverage_filename,
             self.data_drift_report_filename,
             self.data_drift_markdown_filename,
             self.data_drift_numeric_filename,
             self.data_drift_categorical_filename,
+            self.feature_stability_report_filename,
+            self.feature_stability_markdown_filename,
             self.walk_forward_report_filename,
             self.walk_forward_markdown_filename,
             self.model_review_report_filename,
             self.threshold_recommendations_filename,
+            self.error_attribution_report_filename,
             self.optuna_trials_filename,
             self.optuna_study_filename,
             self.external_benchmark_filename,

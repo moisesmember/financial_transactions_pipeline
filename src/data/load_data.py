@@ -41,15 +41,22 @@ class RawDataRepository:
             raise FileNotFoundError(f"Nenhum arquivo encontrado em {location}: {expected}")
         return None
 
-    def load_csv(self, candidates: Iterable[str], required: bool = True) -> pd.DataFrame:
+    def load_csv(
+        self,
+        candidates: Iterable[str],
+        required: bool = True,
+        nrows: int | None = None,
+    ) -> pd.DataFrame:
         """Load a CSV using candidate filenames."""
         path = self._resolve_file(candidates, required=required)
         if path is None:
             return pd.DataFrame()
         logger.info("Carregando CSV de %s: %s", self.settings.storage_backend, path)
         if self.settings.storage_backend == "local":
-            return pd.read_csv(path)
-        return self.object_store.read_csv(str(path))
+            return pd.read_csv(path, nrows=nrows)
+        if nrows is None:
+            return self.object_store.read_csv(str(path))
+        return self.object_store.read_csv(str(path), nrows=nrows)
 
     def load_json(self, candidates: Iterable[str], required: bool = True) -> object:
         """Load a JSON file using candidate filenames."""
@@ -64,7 +71,14 @@ class RawDataRepository:
 
     def load_transactions(self) -> pd.DataFrame:
         """Load transaction records."""
-        return self.load_csv(self.settings.transaction_file_candidates)
+        nrows = self.settings.raw_data_max_rows or None
+        if nrows is not None:
+            logger.warning(
+                "RAW_DATA_MAX_ROWS=%d limita o carregamento bruto de transacoes; "
+                "use 0 para treino e avaliacao temporal completos.",
+                nrows,
+            )
+        return self.load_csv(self.settings.transaction_file_candidates, nrows=nrows)
 
     def load_cards(self) -> pd.DataFrame:
         """Load card records."""
