@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from src.config.settings import Settings
+from src.data.limit_data import TrainingDataLimiter
 from src.models.evaluate import evaluate_binary_classifier
 from src.models.threshold_analysis import build_threshold_table, select_business_threshold, threshold_grid
 from src.models.train import FraudModelTrainer
@@ -138,6 +139,21 @@ class WalkForwardValidator:
                     }
                 )
                 continue
+            train_rows_before_sampling = len(train)
+            train_positives_before_sampling = int(
+                train[self.settings.target_column].eq(1).sum()
+            )
+            if self.settings.negative_sampling_enabled:
+                train = TrainingDataLimiter(
+                    self.settings.training_max_rows,
+                    negative_positive_ratio=self.settings.training_negative_positive_ratio,
+                    random_state=self.settings.random_state + fold_number,
+                    period="M" if self.settings.negative_sampling_by == "month" else "Y",
+                ).apply(
+                    train,
+                    target_column=self.settings.target_column,
+                    time_column=time_column,
+                )
             started = datetime.now(timezone.utc)
             X_train, y_train = self._split_xy(train)
             X_validation, y_validation = self._split_xy(validation)
@@ -173,6 +189,9 @@ class WalkForwardValidator:
                     "fold": fold_number,
                     "status": "completed",
                     "train_rows": int(len(train)),
+                    "train_rows_before_sampling": int(train_rows_before_sampling),
+                    "train_positive_count_before_sampling": train_positives_before_sampling,
+                    "train_positive_count_after_sampling": int(y_train.sum()),
                     "validation_rows": int(len(validation)),
                     "validation_time_min": validation[time_column].min().isoformat(),
                     "validation_time_max": validation[time_column].max().isoformat(),

@@ -44,7 +44,7 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
     settings = Settings(
         project_root=tmp_path,
         database_tracking_enabled=False,
-        training_max_rows=None,
+        training_max_rows=80,
         threshold_analysis_start=0.10,
         threshold_analysis_stop=0.90,
         threshold_analysis_step=0.20,
@@ -63,12 +63,33 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
     )
     assert result.out_of_time_metrics["pr_auc"] >= 0
     assert metadata["dataset"]["out_of_time_rows"] > 0
+    assert metadata["dataset"]["train_rows"] == 80
+    assert metadata["dataset"]["validation_rows"] == 36
+    assert metadata["dataset"]["test_rows"] == 36
+    assert metadata["dataset"]["out_of_time_rows"] == 24
+    assert (
+        metadata["dataset"]["train_positive_rows_before_negative_sampling"]
+        == metadata["dataset"]["train_positive_rows_after_negative_sampling"]
+    )
+    assert sum(metadata["train_metrics"][key] for key in ("tp", "fp", "tn", "fn")) == 80
+    assert sum(
+        metadata["validation_metrics"][key] for key in ("tp", "fp", "tn", "fn")
+    ) == 36
+    assert sum(metadata["test_metrics"][key] for key in ("tp", "fp", "tn", "fn")) == 36
+    assert sum(
+        metadata["out_of_time_metrics"][key] for key in ("tp", "fp", "tn", "fn")
+    ) == 24
     assert metadata["dataset_version"]
     assert metadata["model_selection"]["engine"] == "optuna"
     assert metadata["model_selection"]["trial_count"] == 2
     assert metadata["model_name"] == "logistic_regression"
     assert decision["decision"] in {"approved", "candidate", "pending_review", "reject"}
     assert settings.artifact_path(settings.target_audit_filename).exists()
+    assert settings.artifact_path(settings.sampling_audit_filename).exists()
+    assert settings.artifact_path(settings.sampling_audit_markdown_filename).exists()
+    assert "## Sampling Audit" in settings.artifact_path(
+        settings.model_review_report_filename
+    ).read_text(encoding="utf-8")
     assert settings.artifact_path(settings.data_drift_report_filename).exists()
     assert settings.artifact_path(settings.model_review_report_filename).exists()
     for filename in settings.governance_artifact_filenames:

@@ -92,8 +92,20 @@ class TrainingRequest(BaseModel):
     mlflow_log_model: bool | None = None
     mlflow_register_model: bool | None = None
     mlflow_registered_model_name: str | None = None
+    raw_data_max_rows: int | None = Field(default=None, ge=0)
     training_max_rows: int | None = Field(default=None, ge=0)
-    training_negative_positive_ratio: int | None = Field(default=None, ge=1)
+    preserve_all_positives: bool | None = None
+    negative_sampling_enabled: bool | None = None
+    negative_sampling_strategy: Literal["temporal_stratified"] | None = None
+    negative_sampling_by: Literal["month", "year"] | None = None
+    training_negative_positive_ratio: int | None = Field(
+        default=None,
+        ge=0,
+        validation_alias=AliasChoices(
+            "TRAINING_NEGATIVE_POSITIVE_RATIO",
+            "NEGATIVE_TO_POSITIVE_RATIO",
+        ),
+    )
     baseline_warning_justification: str | None = None
     promotion_min_recall: float | None = Field(default=None, ge=0.0, le=1.0)
     promotion_max_alert_rate: float | None = Field(default=None, ge=0.0, le=1.0)
@@ -144,8 +156,8 @@ class TrainingRequest(BaseModel):
     def settings_overrides(self) -> dict[str, Any]:
         """Return explicit settings overrides, preserving .env defaults for omissions."""
         overrides = self.model_dump(exclude_none=True)
-        if overrides.get("training_max_rows") == 0:
-            overrides["training_max_rows"] = None
+        if overrides.get("training_negative_positive_ratio") == 0:
+            overrides["training_negative_positive_ratio"] = None
         return overrides
 
 

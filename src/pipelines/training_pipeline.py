@@ -15,7 +15,7 @@ from src.config.settings import Settings
 from src.data.limit_data import TrainingDataLimiter
 from src.data.load_data import RawDataRepository
 from src.data.merge_data import FraudDataMerger
-from src.data.split_data import TemporalSplitter
+from src.data.split_data import DataSplits, TemporalSplitter
 from src.features.cleaning import FraudDataCleaner
 from src.ingestion.import_service import DatasetImportService
 from src.models.baseline import BaselineRegistry
@@ -35,6 +35,7 @@ from src.models.leakage_audit import LeakageAuditService
 from src.models.mlflow_tracking import MlflowTrackingService
 from src.models.optuna_search import OptunaModelSelector
 from src.models.robustness import run_geographic_ablation, write_robustness_reports
+from src.models.sampling_audit import SamplingAuditService
 from src.models.target_audit import TargetAuditService
 from src.models.threshold import find_best_threshold
 from src.models.threshold_analysis import (
@@ -104,12 +105,44 @@ class TrainingPipeline:
         del raw
 
         cleaned_for_split = FraudDataCleaner(self.settings).fit_transform(merged)
-        splits = TemporalSplitter(self.settings).split(cleaned_for_split)
+        full_splits = TemporalSplitter(self.settings).split(cleaned_for_split)
         target_audit = TargetAuditService(self.settings).build(
             raw_transactions,
             raw_labels,
-            splits,
+            full_splits,
             self.settings.artifacts_dir,
+        )
+
+        original_train_rows = len(full_splits.train)
+        original_train_positives = int(
+            full_splits.train[self.settings.target_column].eq(1).sum()
+        )
+        limited_train = full_splits.train.copy()
+        if self.settings.negative_sampling_enabled:
+            limited_train = TrainingDataLimiter(
+                self.settings.training_max_rows,
+                negative_positive_ratio=self.settings.training_negative_positive_ratio,
+                random_state=self.settings.random_state,
+                period="M" if self.settings.negative_sampling_by == "month" else "Y",
+            ).apply(
+                full_splits.train,
+                target_column=self.settings.target_column,
+                time_column=full_splits.time_column,
+            )
+        splits = DataSplits(
+            train=limited_train,
+            validation=full_splits.validation,
+            test=full_splits.test,
+            time_column=full_splits.time_column,
+            out_of_time=full_splits.out_of_time,
+        )
+        sampling_audit = SamplingAuditService(self.settings).build(
+            raw_transactions=raw_transactions,
+            supervised=cleaned_for_split,
+            splits_before_sampling=full_splits,
+            splits_after_sampling=splits,
+            target_audit=target_audit,
+            output_dir=self.settings.artifacts_dir,
         )
 
         X_train, y_train = self._split_xy(splits.train)
@@ -266,24 +299,6 @@ class TrainingPipeline:
             beta=self.settings.threshold_beta,
         )
 
-        original_train_rows = len(splits.train)
-        original_train_positives = int(splits.train[self.settings.target_column].eq(1).sum())
-        limited_train = TrainingDataLimiter(
-            self.settings.training_max_rows,
-            negative_positive_ratio=self.settings.training_negative_positive_ratio,
-            random_state=self.settings.random_state,
-        ).apply(
-            splits.train,
-            target_column=self.settings.target_column,
-            time_column=splits.time_column,
-        )
-        splits = type(splits)(
-            train=limited_train,
-            validation=splits.validation,
-            test=splits.test,
-            time_column=splits.time_column,
-            out_of_time=splits.out_of_time,
-        )
         build_error_attribution_report(
             {"validation": X_val, "test": X_test, "out_of_time": X_out_of_time},
             {"validation": y_val, "test": y_test, "out_of_time": y_out_of_time},
@@ -482,6 +497,11 @@ class TrainingPipeline:
             "model_params": selected_model_params,
             "random_state": self.settings.random_state,
             "training_max_rows": self.settings.training_max_rows,
+            "raw_data_max_rows": self.settings.raw_data_max_rows,
+            "preserve_all_positives": self.settings.preserve_all_positives,
+            "negative_sampling_enabled": self.settings.negative_sampling_enabled,
+            "negative_sampling_strategy": self.settings.negative_sampling_strategy,
+            "negative_sampling_by": self.settings.negative_sampling_by,
             "training_negative_positive_ratio": self.settings.training_negative_positive_ratio,
             "feature_exclusions": self.settings.feature_exclusions,
             "exclude_geographic_features": self.settings.exclude_geographic_features,
@@ -501,6 +521,11 @@ class TrainingPipeline:
             "out_of_time_metrics": out_of_time_metrics,
             "time_column": splits.time_column,
             "training_max_rows": self.settings.training_max_rows,
+            "raw_data_max_rows": self.settings.raw_data_max_rows,
+            "preserve_all_positives": self.settings.preserve_all_positives,
+            "negative_sampling_enabled": self.settings.negative_sampling_enabled,
+            "negative_sampling_strategy": self.settings.negative_sampling_strategy,
+            "negative_sampling_by": self.settings.negative_sampling_by,
             "training_negative_positive_ratio": self.settings.training_negative_positive_ratio,
             "strict_leakage_prevention": self.settings.strict_leakage_prevention,
             "dataset": {
@@ -509,6 +534,10 @@ class TrainingPipeline:
                 "train_positive_rows_before_negative_sampling": original_train_positives,
                 "train_positive_rows_after_negative_sampling": int(y_train.eq(1).sum()),
                 "train_negative_rows_after_negative_sampling": int(y_train.eq(0).sum()),
+                "train_positive_count": int(y_train.eq(1).sum()),
+                "validation_positive_count": int(y_val.eq(1).sum()),
+                "test_positive_count": int(y_test.eq(1).sum()),
+                "out_of_time_positive_count": int(y_out_of_time.eq(1).sum()),
                 "validation_rows": len(y_val),
                 "test_rows": len(y_test),
                 "out_of_time_rows": len(y_out_of_time),
@@ -524,6 +553,14 @@ class TrainingPipeline:
                 "test_time_max": splits.test[splits.time_column].max().isoformat(),
                 "out_of_time_time_min": splits.out_of_time[splits.time_column].min().isoformat(),
                 "out_of_time_time_max": splits.out_of_time[splits.time_column].max().isoformat(),
+                "train_min_date": splits.train[splits.time_column].min().isoformat(),
+                "train_max_date": splits.train[splits.time_column].max().isoformat(),
+                "validation_min_date": splits.validation[splits.time_column].min().isoformat(),
+                "validation_max_date": splits.validation[splits.time_column].max().isoformat(),
+                "test_min_date": splits.test[splits.time_column].min().isoformat(),
+                "test_max_date": splits.test[splits.time_column].max().isoformat(),
+                "out_of_time_min_date": splits.out_of_time[splits.time_column].min().isoformat(),
+                "out_of_time_max_date": splits.out_of_time[splits.time_column].max().isoformat(),
             },
             "threshold_selection": {
                 "strategy": self.settings.threshold_selection_strategy,
@@ -549,6 +586,7 @@ class TrainingPipeline:
             },
             "leakage_audit_status": leakage_report["status"],
             "target_audit_status": target_audit["status"],
+            "sampling_audit_status": sampling_audit["status"],
             "data_drift_status": drift_report["status"],
             "robustness_status": robustness_report["status"],
             "walk_forward_status": walk_forward_report["status"],
@@ -574,6 +612,11 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.optuna_study_filename),
             self.settings.artifact_path(self.settings.target_audit_filename),
             self.settings.artifact_path(self.settings.target_audit_markdown_filename),
+            self.settings.artifact_path(self.settings.sampling_audit_filename),
+            self.settings.artifact_path(self.settings.sampling_audit_markdown_filename),
+            self.settings.artifact_path(self.settings.sampling_by_period_filename),
+            self.settings.artifact_path(self.settings.sampling_by_split_filename),
+            self.settings.artifact_path(self.settings.sampling_positive_coverage_filename),
             self.settings.artifact_path(self.settings.data_drift_report_filename),
             self.settings.artifact_path(self.settings.data_drift_markdown_filename),
             self.settings.artifact_path(self.settings.feature_stability_report_filename),
@@ -591,6 +634,7 @@ class TrainingPipeline:
             drift_report=drift_report,
             robustness_report=robustness_report,
             walk_forward_report=walk_forward_report,
+            sampling_audit=sampling_audit,
         )
         metadata["baseline_decision"] = baseline_decision
         if baseline_decision["decision"] == "reject":
@@ -612,6 +656,7 @@ class TrainingPipeline:
             leakage_report,
             baseline_decision,
             target_audit,
+            sampling_audit,
             drift_report,
             robustness_report,
             walk_forward_report,

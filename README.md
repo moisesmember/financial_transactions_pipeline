@@ -401,22 +401,59 @@ AutoGluon e H2O são recomendados em Linux/WSL; H2O também requer uma JVM
 compatível. Uma dependência ausente é registrada como `unavailable` e não
 interrompe o treino principal.
 
-Por padrão, `python main.py` limita a `500000` as transações usadas no merge e
-no treino, evitando esgotar a memória nas etapas mais pesadas em ambientes
-locais. Ajuste no `.env` conforme a RAM disponível:
+Por padrão, o carregamento bruto é completo e o limite local é aplicado apenas
+ao split de treino, depois do `inner join` com labels e do split temporal. Todos
+os positivos conhecidos são preservados; somente negativos são amostrados de
+forma estratificada por mês:
 
 ```bash
-TRAINING_MAX_ROWS=200000
+RAW_DATA_MAX_ROWS=0
+TRAINING_MAX_ROWS=600000
+PRESERVE_ALL_POSITIVES=true
+NEGATIVE_SAMPLING_ENABLED=true
+NEGATIVE_SAMPLING_STRATEGY=temporal_stratified
+NEGATIVE_SAMPLING_BY=month
+NEGATIVE_TO_POSITIVE_RATIO=100
 ```
 
-Para tentar processar o dataset completo, sem limite:
+Para treinar com o dataset supervisionado completo, sem amostragem:
 
 ```bash
+RAW_DATA_MAX_ROWS=0
 TRAINING_MAX_ROWS=0
 ```
 
-O dataset completo exige significativamente mais memória e pode não ser
-adequado para treinamento local com scikit-learn.
+`RAW_DATA_MAX_ROWS` também aceita um limite explícito para diagnóstico, mas uma
+rodada assim não representa o range bruto completo. Validation, test e
+out-of-time nunca são reduzidos por `TRAINING_MAX_ROWS`. Se o número de
+positivos do treino for maior que o limite, a pipeline falha em vez de remover
+fraudes conhecidas.
+
+### Comparar a correção de amostragem
+
+Use o mesmo código, seed e configuração de modelo em todas as novas rodadas.
+A rodada A deve ser um `run_id` histórico produzido antes da correção; a
+pipeline atual não oferece modo sequencial porque essa estratégia é inválida.
+
+| Rodada | Configuração |
+|---|---|
+| A — legado sequencial | run histórico com o antigo corte cronológico |
+| B — supervisionado completo | `TRAINING_MAX_ROWS=0` |
+| C — positivos + negativos por mês | `TRAINING_MAX_ROWS=600000`, `NEGATIVE_TO_POSITIVE_RATIO=0` |
+| D — mensal 1:100 | `TRAINING_MAX_ROWS=600000`, `NEGATIVE_TO_POSITIVE_RATIO=100` |
+| E — mensal 1:200 | `TRAINING_MAX_ROWS=600000`, `NEGATIVE_TO_POSITIVE_RATIO=200` |
+
+Em todas as rodadas novas mantenha `RAW_DATA_MAX_ROWS=0`,
+`PRESERVE_ALL_POSITIVES=true`, `NEGATIVE_SAMPLING_ENABLED=true` e
+`NEGATIVE_SAMPLING_BY=month`. Execute `python main.py` após cada alteração e
+compare o histórico com:
+
+```bash
+python scripts/list_training_history.py --limit 10
+```
+
+`NEGATIVE_TO_POSITIVE_RATIO=0` desativa somente o teto por razão; o orçamento
+de `TRAINING_MAX_ROWS` continua sendo distribuído entre os meses.
 
 ## Avaliação, threshold e baseline
 
@@ -427,6 +464,11 @@ Cada treinamento gera:
   labels, cobertura temporal e duplicidades. Transacoes sem label sao removidas
   do treino supervisionado via `inner join`; nenhuma e convertida para classe 0,
   e labels invalidos geram erro antes do treino.
+- `artifacts/sampling_audit.json`, `sampling_audit.md`,
+  `sampling_by_period.csv`, `sampling_by_split.csv` e
+  `sampling_positive_coverage.csv`: comprovam o estágio da amostragem, a
+  cobertura positiva, o range temporal e que os splits de avaliação ficaram
+  intactos.
 - `artifacts/data_drift_report.json`, `data_drift_report.md`,
   `data_drift_numeric.csv` e `data_drift_categorical.csv`: comparação de
   distribuição entre treino, validação, teste e out-of-time, com PSI/KS quando
@@ -745,7 +787,13 @@ curl -X POST "http://localhost:8000/training-runs" \
     "BASELINE_OVERWRITE": false,
     "RUN_GEO_ABLATION": false,
     "TRAINING_HISTORY_SAVE_PIPELINE": true,
-    "TRAINING_MAX_ROWS": 500000,
+    "RAW_DATA_MAX_ROWS": 0,
+    "TRAINING_MAX_ROWS": 600000,
+    "PRESERVE_ALL_POSITIVES": true,
+    "NEGATIVE_SAMPLING_ENABLED": true,
+    "NEGATIVE_SAMPLING_STRATEGY": "temporal_stratified",
+    "NEGATIVE_SAMPLING_BY": "month",
+    "NEGATIVE_TO_POSITIVE_RATIO": 100,
     "BASELINE_WARNING_JUSTIFICATION": "",
     "PROMOTION_MIN_RECALL": 0.90,
     "PROMOTION_MAX_ALERT_RATE": 0.025,
@@ -765,9 +813,10 @@ valores resolvidos do `.env`; `TRAINING_MAX_ROWS=0` processa o dataset completo.
 Quando existe limite, ele e aplicado somente depois do inner join e do split
 temporal: todos os positivos do treino sao preservados e apenas negativos sao
 amostrados por mes. Validacao, teste e out-of-time nao sao reduzidos. Use
-`TRAINING_NEGATIVE_POSITIVE_RATIO=100` para controlar a razao maxima aproximada
-de negativos por positivo em cada periodo. Se os positivos sozinhos excederem
-`TRAINING_MAX_ROWS`, nenhum positivo sera removido.
+`NEGATIVE_TO_POSITIVE_RATIO=100` para controlar a razão máxima global de
+negativos por positivo; o orçamento resultante é distribuído entre os períodos.
+Se os positivos sozinhos excederem `TRAINING_MAX_ROWS`, a execução falha e
+nenhum positivo é removido.
 Os nomes também podem ser enviados em `snake_case`. Apenas um treinamento pode
 executar por processo da API. Cada job usa staging isolado em
 `.runtime/training/<job_id>` para não disputar arquivos com a inferência. Em

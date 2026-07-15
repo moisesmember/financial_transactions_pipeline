@@ -243,7 +243,7 @@ def test_start_training_accepts_env_style_aliases_and_returns_202() -> None:
     assert response.json()["job_id"] == "job-1"
     assert manager.request is not None
     assert manager.request.threshold_cost_scenarios == ((1.0, 10.0), (5.0, 25.0))
-    assert manager.request.settings_overrides()["training_max_rows"] is None
+    assert manager.request.settings_overrides()["training_max_rows"] == 0
 
 
 def test_start_training_allows_empty_body_to_use_env_defaults() -> None:

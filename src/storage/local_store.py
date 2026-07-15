@@ -26,9 +26,9 @@ class LocalObjectStore(ObjectStore):
         """Return whether a local file exists."""
         return self._path(key).exists()
 
-    def read_csv(self, key: str) -> pd.DataFrame:
+    def read_csv(self, key: str, nrows: int | None = None) -> pd.DataFrame:
         """Read a local CSV file into a dataframe."""
-        return pd.read_csv(self._path(key))
+        return pd.read_csv(self._path(key), nrows=nrows)
 
     def read_json(self, key: str) -> Any:
         """Read a local JSON file."""

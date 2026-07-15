@@ -227,3 +227,7 @@ __marimo__/
 .streamlit/secrets.toml
 
 logs/
+
+notebooks/reports/fraud_fato.csv
+
+notebooks/reports/fraudes_por_dia.csv

@@ -24,6 +24,7 @@ class BaselineDecisionService:
         drift_report: dict[str, Any] | None = None,
         robustness_report: dict[str, Any] | None = None,
         walk_forward_report: dict[str, Any] | None = None,
+        sampling_audit: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Return reject/candidate/pending_review/approved with explicit reasons."""
         blocking_reasons: list[str] = []
@@ -41,6 +42,10 @@ class BaselineDecisionService:
         else:
             validation_pr_auc = float(validation["pr_auc"])
             oot_pr_auc = float(oot["pr_auc"])
+            if "tp" in oot and int(oot["tp"]) == 0:
+                blocking_reasons.append("TP out-of-time igual a zero.")
+            if float(oot.get("recall", 0.0)) == 0.0:
+                blocking_reasons.append("Recall out-of-time igual a zero.")
             relative_drop = (
                 (validation_pr_auc - oot_pr_auc) / validation_pr_auc
                 if validation_pr_auc > 0
@@ -91,6 +96,10 @@ class BaselineDecisionService:
             warning_reasons.append("Artefatos obrigatorios ausentes: " + ", ".join(sorted(missing)))
 
         self._apply_audit_gate("target audit", target_audit, blocking_reasons, warning_reasons)
+        if sampling_audit is not None:
+            self._apply_audit_gate(
+                "sampling audit", sampling_audit, blocking_reasons, warning_reasons
+            )
         self._apply_audit_gate("drift report", drift_report, blocking_reasons, warning_reasons)
         geo_ablation = (robustness_report or {}).get("geo_ablation")
         self._apply_audit_gate("geo ablation", geo_ablation, blocking_reasons, warning_reasons)
