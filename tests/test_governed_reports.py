@@ -12,7 +12,11 @@ from src.data.split_data import DataSplits
 from src.models.baseline_decision import BaselineDecisionService
 from src.models.data_drift import DataDriftReportService
 from src.models.error_attribution import build_error_attribution_report
-from src.models.robustness import geographic_feature_names, write_robustness_reports
+from src.models.robustness import (
+    REQUIRED_GEO_EXPERIMENTS,
+    geographic_feature_names,
+    write_robustness_reports,
+)
 from src.models.target_audit import TargetAuditService
 from src.models.threshold_analysis import build_threshold_recommendations, build_threshold_table
 from src.models.walk_forward import summarize_walk_forward_folds
@@ -30,6 +34,8 @@ def test_error_attribution_report_describes_all_confusion_cohorts(tmp_path) -> N
         }
     )
     output = tmp_path / "error_attribution_report.json"
+    markdown = tmp_path / "error_attribution_report.md"
+    groups = tmp_path / "error_attribution_by_group.csv"
 
     report = build_error_attribution_report(
         {"out_of_time": frame},
@@ -37,6 +43,8 @@ def test_error_attribution_report_describes_all_confusion_cohorts(tmp_path) -> N
         {"out_of_time": np.array([0.9, 0.8, 0.2, 0.1])},
         threshold=0.5,
         output_path=output,
+        markdown_path=markdown,
+        by_group_path=groups,
     )
 
     cohorts = report["splits"]["out_of_time"]
@@ -46,6 +54,9 @@ def test_error_attribution_report_describes_all_confusion_cohorts(tmp_path) -> N
     assert cohorts["fp_vs_fn"]["amount_mean_difference_fp_minus_fn"] == -80.0
     assert report["shap_status"] == "not_computed"
     assert output.exists()
+    assert markdown.exists()
+    assert groups.exists()
+    assert cohorts["FN"]["score_percentiles"]
 
 
 def _splits() -> DataSplits:
@@ -72,6 +83,15 @@ def test_geographic_feature_detection() -> None:
     assert geographic_feature_names(
         ("amount", "merchant_city", "merchant_state", "zip", "latitude", "mcc")
     ) == ("merchant_city", "merchant_state", "zip", "latitude")
+    assert set(REQUIRED_GEO_EXPERIMENTS) == {
+        "A_full",
+        "B_without_coordinates",
+        "C_without_city_state",
+        "D_without_all_geo",
+        "E_transactional_behavioral_only",
+        "F_city_grouped_online_offline_other",
+        "G_without_high_drift_features",
+    }
 
 
 def test_target_audit_flags_missing_labels(tmp_path) -> None:
@@ -127,6 +147,7 @@ def test_data_drift_report_writes_json_markdown_and_csv(tmp_path) -> None:
     assert (tmp_path / settings.data_drift_categorical_filename).exists()
     assert (tmp_path / settings.feature_stability_report_filename).exists()
     assert (tmp_path / settings.feature_stability_markdown_filename).exists()
+    assert (tmp_path / settings.feature_stability_by_period_filename).exists()
 
 
 def test_threshold_recommendations_include_validation_and_retrospective_oot() -> None:

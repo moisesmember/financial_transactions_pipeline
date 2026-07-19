@@ -22,6 +22,7 @@ DEFAULT_DRIFT_COLUMNS = (
     "transaction_hour",
     "transaction_dayofweek",
     "transaction_month",
+    "transactions_seen_before",
     "use_chip",
     "mcc",
     "mcc_description",
@@ -80,6 +81,16 @@ class DataDriftReportService:
             encoding="utf-8",
         )
         feature_stability = self._feature_stability_payload(numeric, categorical)
+        stability_by_period = self._feature_stability_by_period(
+            frames, columns, splits.time_column
+        )
+        stability_by_period.to_csv(
+            output_dir / self.settings.feature_stability_by_period_filename,
+            index=False,
+        )
+        feature_stability["by_period_artifact"] = (
+            self.settings.feature_stability_by_period_filename
+        )
         (output_dir / self.settings.feature_stability_report_filename).write_text(
             json.dumps(feature_stability, indent=2, ensure_ascii=True, allow_nan=False),
             encoding="utf-8",
@@ -182,15 +193,17 @@ class DataDriftReportService:
                 continue
             for row in frame.loc[frame["split"].ne("train")].to_dict(orient="records"):
                 psi = self._safe_float(row.get("psi_vs_train"))
-                recommendation = "keep"
-                if psi is not None and psi >= self.settings.feature_stability_psi_threshold:
-                    recommendation = "transform_or_remove"
+                classification = self._drift_classification(psi)
+                recommendation = self._drift_recommendation(
+                    row["feature"], feature_type, classification
+                )
                 rows.append(
                     {
                         "feature": row["feature"],
                         "feature_type": feature_type,
                         "split": row["split"],
                         "psi_vs_train": psi,
+                        "classification": classification,
                         "recommendation": recommendation,
                     }
                 )
@@ -222,6 +235,84 @@ class DataDriftReportService:
                 "Use este relatorio para decidir se a feature deve ser mantida, transformada ou removida em novo experimento.",
             ],
         }
+
+    def _feature_stability_by_period(
+        self,
+        frames: dict[str, pd.DataFrame],
+        columns: list[str],
+        time_column: str,
+    ) -> pd.DataFrame:
+        rows: list[dict[str, Any]] = []
+        train = frames["train"]
+        for split, frame in frames.items():
+            if time_column not in frame.columns:
+                continue
+            periods = pd.to_datetime(frame[time_column], errors="coerce").dt.to_period("M")
+            for period, period_frame in frame.groupby(periods, dropna=True, sort=True):
+                for feature in columns:
+                    if feature not in train.columns or feature not in period_frame.columns:
+                        continue
+                    if pd.api.types.is_numeric_dtype(train[feature]):
+                        feature_type = "numeric"
+                        psi = self._numeric_psi(
+                            pd.to_numeric(train[feature], errors="coerce").dropna(),
+                            pd.to_numeric(period_frame[feature], errors="coerce").dropna(),
+                        )
+                    else:
+                        feature_type = "categorical"
+                        psi = self._categorical_psi(
+                            train[feature].astype("string").fillna("<missing>"),
+                            period_frame[feature].astype("string").fillna("<missing>"),
+                        )
+                    classification = self._drift_classification(psi)
+                    rows.append(
+                        {
+                            "split": split,
+                            "period": str(period),
+                            "feature": feature,
+                            "feature_type": feature_type,
+                            "rows": int(len(period_frame)),
+                            "psi_vs_train": psi,
+                            "classification": classification,
+                            "recommendation": self._drift_recommendation(
+                                feature, feature_type, classification
+                            ),
+                        }
+                    )
+        return pd.DataFrame(rows)
+
+    @staticmethod
+    def _drift_classification(psi: float | None) -> str:
+        if psi is None:
+            return "not_available"
+        if psi < 0.10:
+            return "stable"
+        if psi < 0.25:
+            return "moderate_drift"
+        if psi < 0.50:
+            return "high_drift"
+        return "critical_drift"
+
+    @staticmethod
+    def _drift_recommendation(
+        feature: str,
+        feature_type: str,
+        classification: str,
+    ) -> str:
+        if classification == "stable":
+            return "keep"
+        if classification == "not_available":
+            return "investigate"
+        if classification == "moderate_drift":
+            return "group" if feature_type == "categorical" else "transform"
+        if classification == "high_drift":
+            return "group" if feature_type == "categorical" else "investigate"
+        if any(
+            token in feature.lower()
+            for token in ("city", "state", "zip", "latitude", "longitude")
+        ):
+            return "remove"
+        return "investigate"
 
     def _columns(
         self,
@@ -337,12 +428,12 @@ class DataDriftReportService:
             "",
             "## Top Drift",
             "",
-            "| Feature | Split | PSI | Recommendation |",
-            "|---|---|---:|---|",
+            "| Feature | Split | PSI | Classification | Recommendation |",
+            "|---|---|---:|---|---|",
         ]
         for row in payload.get("top_drift", []):
             lines.append(
                 f"| {row['feature']} | {row['split']} | {row['psi_vs_train']} | "
-                f"{row['recommendation']} |"
+                f"{row.get('classification')} | {row['recommendation']} |"
             )
         return "\n".join(lines) + "\n"

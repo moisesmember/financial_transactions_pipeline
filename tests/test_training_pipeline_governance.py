@@ -51,7 +51,14 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
         categorical_min_frequency=2,
         optuna_model_candidates=("logistic_regression",),
         optuna_trials=2,
+        optuna_trials_per_model=2,
         optuna_timeout_seconds=60,
+        min_pr_auc_lift_over_random=0.0,
+        min_fold_recall_candidate=0.0,
+        min_last_fold_recall_candidate=0.0,
+        max_temporal_alert_rate=1.0,
+        max_pr_auc_temporal_drop=1.0,
+        max_recall_temporal_drop=1.0,
         external_benchmarks_enabled=False,
     )
 
@@ -83,6 +90,8 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
     assert metadata["model_selection"]["engine"] == "optuna"
     assert metadata["model_selection"]["trial_count"] == 2
     assert metadata["model_name"] == "logistic_regression"
+    assert metadata["baseline_name"] == "baseline_after_sampling_fix"
+    assert metadata["sampling_fix_applied"] is True
     assert decision["decision"] in {"approved", "candidate", "pending_review", "reject"}
     assert settings.artifact_path(settings.target_audit_filename).exists()
     assert settings.artifact_path(settings.sampling_audit_filename).exists()
@@ -92,6 +101,12 @@ def test_training_pipeline_generates_governance_artifacts(tmp_path, monkeypatch)
     ).read_text(encoding="utf-8")
     assert settings.artifact_path(settings.data_drift_report_filename).exists()
     assert settings.artifact_path(settings.model_review_report_filename).exists()
+    assert settings.artifact_path(settings.performance_by_year_filename).exists()
+    assert settings.artifact_path(settings.error_attribution_markdown_filename).exists()
+    assert settings.artifact_path(settings.top_k_analysis_filename).exists()
+    assert "## What changed after sampling fix" in settings.artifact_path(
+        settings.model_review_report_filename
+    ).read_text(encoding="utf-8")
     for filename in settings.governance_artifact_filenames:
         if filename == settings.geo_ablation_filename:
             continue

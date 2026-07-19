@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from src.config.settings import Settings
@@ -46,6 +47,15 @@ GEO_TOKEN_HINTS = (
     "address",
     "location",
 )
+REQUIRED_GEO_EXPERIMENTS = (
+    "A_full",
+    "B_without_coordinates",
+    "C_without_city_state",
+    "D_without_all_geo",
+    "E_transactional_behavioral_only",
+    "F_city_grouped_online_offline_other",
+    "G_without_high_drift_features",
+)
 
 
 def geographic_feature_names(columns: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -72,6 +82,7 @@ def run_geographic_ablation(
     y_out_of_time: pd.Series,
     primary_metrics_by_split: dict[str, dict[str, float]],
     primary_top_features: pd.DataFrame,
+    high_drift_features: tuple[str, ...] = (),
 ) -> pd.DataFrame:
     """Train controlled variants to quantify geographic overfitting."""
     started = datetime.now(timezone.utc)
@@ -92,32 +103,19 @@ def run_geographic_ablation(
         and not any(token in column.lower() for token in TRANSACTIONAL_BEHAVIORAL_KEEP_TOKENS)
     )
     experiments = (
-        ("B_without_coordinates", tuple(col for col in GEO_COORDINATES if col in X_train.columns), model_name, model_params),
-        ("C_without_city_state", tuple(col for col in GEO_CORE if col in X_train.columns), model_name, model_params),
-        ("D_without_all_geo", available_geo, model_name, model_params),
-        ("E_transactional_behavioral_only", transactional_exclusions, model_name, model_params),
-        ("F_interpretable_baseline", available_geo, "logistic_regression", settings.model_params["logistic_regression"]),
+        ("B_without_coordinates", tuple(col for col in GEO_COORDINATES if col in X_train.columns), None),
+        ("C_without_city_state", tuple(col for col in GEO_CORE if col in X_train.columns), None),
+        ("D_without_all_geo", available_geo, None),
+        ("E_transactional_behavioral_only", transactional_exclusions, None),
         (
-            "G_without_transactions_seen_before",
-            tuple(col for col in ("transactions_seen_before",) if col in X_train.columns),
-            model_name,
-            model_params,
+            "F_city_grouped_online_offline_other",
+            tuple(col for col in (*GEO_COORDINATES, "merchant_state") if col in X_train.columns),
+            "group_city_channel",
         ),
         (
-            "H_without_use_chip",
-            tuple(col for col in ("use_chip",) if col in X_train.columns),
-            model_name,
-            model_params,
-        ),
-        (
-            "I_without_city_state_and_transactions_seen",
-            tuple(
-                col
-                for col in (*GEO_CORE, "transactions_seen_before")
-                if col in X_train.columns
-            ),
-            model_name,
-            model_params,
+            "G_without_high_drift_features",
+            tuple(col for col in high_drift_features if col in X_train.columns),
+            None,
         ),
     )
     thresholds = threshold_grid(
@@ -125,8 +123,11 @@ def run_geographic_ablation(
         settings.threshold_analysis_stop,
         settings.threshold_analysis_step,
     )
-    for experiment_group, exclusions, experiment_model, experiment_params in experiments:
-        if experiment_group != "E_transactional_behavioral_only" and not exclusions:
+    for experiment_group, exclusions, transform_name in experiments:
+        if experiment_group not in {
+            "E_transactional_behavioral_only",
+            "F_city_grouped_online_offline_other",
+        } and not exclusions:
             rows.extend(
                 _status_rows(
                     parent_run_id,
@@ -140,20 +141,27 @@ def run_geographic_ablation(
             continue
         experiment_started = datetime.now(timezone.utc)
         try:
+            experiment_frames = {
+                "train": X_train.copy(),
+                "validation": X_validation.copy(),
+                "test": X_test.copy(),
+                "out_of_time": X_out_of_time.copy(),
+            }
+            if transform_name == "group_city_channel":
+                experiment_frames = _group_city_channel(experiment_frames)
             experiment_settings = replace(
                 settings,
                 feature_exclusions=tuple(sorted(set(settings.feature_exclusions) | set(exclusions))),
                 run_geo_ablation=False,
-                model_name=experiment_model,
                 feature_set_version=f"{settings.feature_set_version}:{experiment_group}",
             )
             pipeline = FraudModelTrainer(experiment_settings).train(
-                X_train,
+                experiment_frames["train"],
                 y_train,
-                model_name=experiment_model,
-                model_params=experiment_params,
+                model_name=model_name,
+                model_params=model_params,
             )
-            validation_scores = pipeline.predict_proba(X_validation)[:, 1]
+            validation_scores = pipeline.predict_proba(experiment_frames["validation"])[:, 1]
             validation_table = build_threshold_table(
                 y_validation.to_numpy(),
                 validation_scores,
@@ -165,10 +173,10 @@ def run_geographic_ablation(
             )
             threshold, _ = select_business_threshold(validation_table)
             scores_by_split = {
-                "train": (y_train, pipeline.predict_proba(X_train)[:, 1]),
+                "train": (y_train, pipeline.predict_proba(experiment_frames["train"])[:, 1]),
                 "validation": (y_validation, validation_scores),
-                "test": (y_test, pipeline.predict_proba(X_test)[:, 1]),
-                "out_of_time": (y_out_of_time, pipeline.predict_proba(X_out_of_time)[:, 1]),
+                "test": (y_test, pipeline.predict_proba(experiment_frames["test"])[:, 1]),
+                "out_of_time": (y_out_of_time, pipeline.predict_proba(experiment_frames["out_of_time"])[:, 1]),
             }
             top_features = build_feature_importance(pipeline)
             rows.extend(
@@ -177,7 +185,7 @@ def run_geographic_ablation(
                     experiment_group,
                     exclusions,
                     experiment_settings.feature_set_version,
-                    experiment_model,
+                    model_name,
                     threshold,
                     scores_by_split,
                     top_features,
@@ -185,6 +193,7 @@ def run_geographic_ablation(
                     None,
                     (datetime.now(timezone.utc) - experiment_started).total_seconds(),
                     settings,
+                    tuple(experiment_frames["train"].columns),
                 )
             )
         except Exception as exc:  # noqa: BLE001 - robustness should not fail main training
@@ -270,6 +279,7 @@ def _result_rows(
     message: str | None,
     duration_seconds: float,
     settings: Settings,
+    available_features: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     rows = []
     for split, (target, scores) in scores_by_split.items():
@@ -296,6 +306,10 @@ def _result_rows(
                 status,
                 message,
                 duration_seconds,
+                features_kept=tuple(
+                    feature for feature in available_features if feature not in features_removed
+                ),
+                decision=_metric_decision(metrics, settings, split),
             )
         )
     return rows
@@ -313,6 +327,8 @@ def _result_row(
     status: str,
     message: str | None,
     duration_seconds: float,
+    features_kept: tuple[str, ...] = (),
+    decision: str = "reference_model",
 ) -> dict[str, Any]:
     return {
         "parent_run_id": parent_run_id,
@@ -323,6 +339,7 @@ def _result_row(
         "feature_set_version": feature_set_version,
         "features_removed": json.dumps(list(features_removed)),
         "feature_count_removed": len(features_removed),
+        "features_kept": json.dumps(list(features_kept)),
         "threshold": metrics.get("threshold"),
         "precision": metrics.get("precision"),
         "recall": metrics.get("recall"),
@@ -340,6 +357,8 @@ def _result_row(
         "message": message,
         "duration_seconds": duration_seconds,
         "top_features": top_features.head(20).to_json(orient="records") if not top_features.empty else "[]",
+        "walk_forward_metrics": None,
+        "decision": decision,
     }
 
 
@@ -362,10 +381,13 @@ def _status_rows(
             "feature_set_version": feature_set_version,
             "features_removed": json.dumps(list(features_removed)),
             "feature_count_removed": len(features_removed),
+            "features_kept": "[]",
             "status": status,
             "message": message,
             "duration_seconds": duration_seconds,
             "top_features": "[]",
+            "walk_forward_metrics": None,
+            "decision": "not_evaluated",
         }
         for split in ("train", "validation", "test", "out_of_time")
     ]
@@ -498,3 +520,39 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "item"):
         return _json_safe(value.item())
     return value
+
+
+def _group_city_channel(
+    frames: dict[str, pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """Replace high-cardinality city with online/offline/other channel groups."""
+    grouped: dict[str, pd.DataFrame] = {}
+    for split, frame in frames.items():
+        output = frame.copy()
+        if "merchant_city" in output.columns:
+            if "use_chip" in output.columns:
+                channel = output["use_chip"].astype("string").str.lower()
+                output["merchant_city"] = np.select(
+                    [
+                        channel.str.contains("online", na=False),
+                        channel.str.contains("chip|swipe|physical", regex=True, na=False),
+                    ],
+                    ["online", "offline"],
+                    default="other",
+                )
+            else:
+                output["merchant_city"] = "other"
+        grouped[split] = output
+    return grouped
+
+
+def _metric_decision(metrics: dict[str, Any], settings: Settings, split: str) -> str:
+    if split != "out_of_time":
+        return "supporting_evidence"
+    if (
+        float(metrics.get("recall", 0.0)) < settings.promotion_min_recall
+        or float(metrics.get("alert_rate", 1.0)) > settings.promotion_max_alert_rate
+        or int(metrics.get("tp", 0)) == 0
+    ):
+        return "reject"
+    return "candidate"

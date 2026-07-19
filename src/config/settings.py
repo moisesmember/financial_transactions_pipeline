@@ -104,12 +104,26 @@ class Settings:
         )
     )
     optuna_trials: int = field(default_factory=lambda: int(os.getenv("OPTUNA_TRIALS", "15")))
+    optuna_trials_per_model: int = field(
+        default_factory=lambda: int(os.getenv("OPTUNA_TRIALS_PER_MODEL", "10"))
+    )
     optuna_timeout_seconds: int | None = field(
         default_factory=lambda: _env_optional_positive_int("OPTUNA_TIMEOUT_SECONDS", 900)
     )
     optuna_n_jobs: int = field(default_factory=lambda: int(os.getenv("OPTUNA_N_JOBS", "1")))
+    optuna_timeout_per_model_seconds: int | None = field(
+        default_factory=lambda: _env_optional_positive_int(
+            "OPTUNA_TIMEOUT_PER_MODEL_SECONDS", 3600
+        )
+    )
+    optuna_enable_pruning: bool = field(
+        default_factory=lambda: _env_bool("OPTUNA_ENABLE_PRUNING", True)
+    )
     optuna_selection_objective: str = field(
-        default_factory=lambda: os.getenv("OPTUNA_SELECTION_OBJECTIVE", "temporal_stability")
+        default_factory=lambda: os.getenv(
+            "MODEL_SELECTION_OBJECTIVE",
+            os.getenv("OPTUNA_SELECTION_OBJECTIVE", "temporal_stability"),
+        )
     )
     optuna_temporal_holdout_fraction: float = field(
         default_factory=lambda: _env_float("OPTUNA_TEMPORAL_HOLDOUT_FRACTION", 0.20)
@@ -122,6 +136,27 @@ class Settings:
     )
     optuna_last_window_penalty: float = field(
         default_factory=lambda: _env_float("OPTUNA_LAST_WINDOW_PENALTY", 1.00)
+    )
+    min_valid_temporal_folds: int = field(
+        default_factory=lambda: int(os.getenv("MIN_VALID_TEMPORAL_FOLDS", "3"))
+    )
+    min_fold_recall_candidate: float = field(
+        default_factory=lambda: _env_float("MIN_FOLD_RECALL_CANDIDATE", 0.05)
+    )
+    min_last_fold_recall_candidate: float = field(
+        default_factory=lambda: _env_float("MIN_LAST_FOLD_RECALL_CANDIDATE", 0.05)
+    )
+    min_pr_auc_lift_over_random: float = field(
+        default_factory=lambda: _env_float("MIN_PR_AUC_LIFT_OVER_RANDOM", 1.25)
+    )
+    max_temporal_alert_rate: float = field(
+        default_factory=lambda: _env_float("MAX_TEMPORAL_ALERT_RATE", 0.025)
+    )
+    max_pr_auc_temporal_drop: float = field(
+        default_factory=lambda: _env_float("MAX_PR_AUC_TEMPORAL_DROP", 0.80)
+    )
+    max_recall_temporal_drop: float = field(
+        default_factory=lambda: _env_float("MAX_RECALL_TEMPORAL_DROP", 0.80)
     )
     external_benchmarks_enabled: bool = field(
         default_factory=lambda: _env_bool_alias(
@@ -166,13 +201,19 @@ class Settings:
         default_factory=lambda: os.getenv("THRESHOLD_SELECTION_STRATEGY", "business_cost")
     )
     threshold_analysis_start: float = field(
-        default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_START", 0.05)
+        default_factory=lambda: _env_float(
+            "THRESHOLD_MIN", _env_float("THRESHOLD_ANALYSIS_START", 0.01)
+        )
     )
     threshold_analysis_stop: float = field(
-        default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_STOP", 0.80)
+        default_factory=lambda: _env_float(
+            "THRESHOLD_MAX", _env_float("THRESHOLD_ANALYSIS_STOP", 0.99)
+        )
     )
     threshold_analysis_step: float = field(
-        default_factory=lambda: _env_float("THRESHOLD_ANALYSIS_STEP", 0.01)
+        default_factory=lambda: _env_float(
+            "THRESHOLD_STEP", _env_float("THRESHOLD_ANALYSIS_STEP", 0.01)
+        )
     )
     false_positive_cost: float = field(default_factory=lambda: _env_float("FALSE_POSITIVE_COST", 1.0))
     false_negative_cost: float = field(default_factory=lambda: _env_float("FALSE_NEGATIVE_COST", 25.0))
@@ -189,9 +230,23 @@ class Settings:
         default_factory=lambda: _env_bool("STRICT_LEAKAGE_PREVENTION", True)
     )
     promote_baseline: bool = field(default_factory=lambda: _env_bool("PROMOTE_BASELINE", False))
+    human_approval_confirmed: bool = field(
+        default_factory=lambda: _env_bool("HUMAN_APPROVAL_CONFIRMED", False)
+    )
     baseline_overwrite: bool = field(default_factory=lambda: _env_bool("BASELINE_OVERWRITE", False))
     baseline_warning_justification: str | None = field(
         default_factory=lambda: os.getenv("BASELINE_WARNING_JUSTIFICATION")
+    )
+    baseline_name: str = field(
+        default_factory=lambda: os.getenv("BASELINE_NAME", "baseline_after_sampling_fix")
+    )
+    sampling_fix_applied: bool = field(
+        default_factory=lambda: _env_bool("SAMPLING_FIX_APPLIED", True)
+    )
+    previous_baselines_invalidated_by_sampling_bias: bool = field(
+        default_factory=lambda: _env_bool(
+            "PREVIOUS_BASELINES_INVALIDATED_BY_SAMPLING_BIAS", True
+        )
     )
     promotion_min_recall: float = field(
         default_factory=lambda: _env_float("PROMOTION_MIN_RECALL", 0.90)
@@ -265,9 +320,16 @@ class Settings:
             _env_optional_positive_int("TRAINING_NEGATIVE_POSITIVE_RATIO", 100),
         )
     )
+    sampling_enforce_fixed_ratio: bool = field(
+        default_factory=lambda: _env_bool("SAMPLING_ENFORCE_FIXED_RATIO", True)
+    )
+    imbalance_strategy: str = field(
+        default_factory=lambda: os.getenv("IMBALANCE_STRATEGY", "negative_sampling")
+    )
     target_column: str = "is_fraud"
     pipeline_filename: str = "fraud_pipeline.joblib"
     metadata_filename: str = "model_metadata.joblib"
+    metadata_json_filename: str = "metadata.json"
     threshold_analysis_filename: str = "threshold_analysis.csv"
     leakage_report_filename: str = "leakage_audit.json"
     threshold_cost_scenarios_filename: str = "threshold_cost_scenarios.csv"
@@ -279,6 +341,7 @@ class Settings:
     out_of_time_metrics_filename: str = "out_of_time_metrics.json"
     model_card_filename: str = "model_card.md"
     baseline_decision_filename: str = "baseline_decision.json"
+    baseline_reference_filename: str = "baseline_after_sampling_fix.json"
     manifest_filename: str = "manifest.json"
     geo_ablation_filename: str = "geo_ablation_results.csv"
     robustness_report_filename: str = "robustness_report.json"
@@ -300,6 +363,7 @@ class Settings:
     data_drift_categorical_filename: str = "data_drift_categorical.csv"
     feature_stability_report_filename: str = "feature_stability_report.json"
     feature_stability_markdown_filename: str = "feature_stability_report.md"
+    feature_stability_by_period_filename: str = "feature_stability_by_period.csv"
     feature_stability_psi_threshold: float = field(
         default_factory=lambda: _env_float("FEATURE_STABILITY_PSI_THRESHOLD", 0.25)
     )
@@ -308,8 +372,20 @@ class Settings:
     model_review_report_filename: str = "model_review_report.md"
     threshold_recommendations_filename: str = "threshold_recommendations.json"
     error_attribution_report_filename: str = "error_attribution_report.json"
+    error_attribution_markdown_filename: str = "error_attribution_report.md"
+    error_attribution_by_group_filename: str = "error_attribution_by_group.csv"
+    performance_by_year_filename: str = "performance_by_year.csv"
+    performance_by_month_filename: str = "performance_by_month.csv"
+    performance_by_period_markdown_filename: str = "performance_by_period.md"
+    top_k_analysis_filename: str = "top_k_analysis.csv"
+    top_k_analysis_markdown_filename: str = "top_k_analysis.md"
+    top_k_values: tuple[int, ...] = (500, 1000, 2500, 5000, 10000)
     optuna_trials_filename: str = "optuna_trials.csv"
     optuna_study_filename: str = "optuna_study.json"
+    objective_score_breakdown_filename: str = "objective_score_breakdown.csv"
+    objective_score_breakdown_markdown_filename: str = "objective_score_breakdown.md"
+    baseline_challenger_comparison_filename: str = "baseline_challenger_comparison.json"
+    baseline_challenger_comparison_markdown_filename: str = "baseline_challenger_comparison.md"
     external_benchmark_filename: str = "external_benchmark_results.csv"
     external_benchmark_summary_filename: str = "external_benchmark_summary.json"
     baseline_pipeline_filename: str = "official_pipeline.joblib"
@@ -446,6 +522,12 @@ class Settings:
             "negative_sampling_by",
             self.negative_sampling_by.strip().lower(),
         )
+        object.__setattr__(
+            self,
+            "imbalance_strategy",
+            self.imbalance_strategy.strip().lower(),
+        )
+        object.__setattr__(self, "baseline_name", self.baseline_name.strip())
         if self.mlflow_tracking_uri is None or not self.mlflow_tracking_uri.strip():
             object.__setattr__(
                 self,
@@ -493,12 +575,23 @@ class Settings:
             )
         if self.optuna_trials < 1:
             raise ValueError("OPTUNA_TRIALS deve ser positivo.")
+        if self.optuna_trials_per_model < 1:
+            raise ValueError("OPTUNA_TRIALS_PER_MODEL deve ser positivo.")
+        if self.min_valid_temporal_folds < 1:
+            raise ValueError("MIN_VALID_TEMPORAL_FOLDS deve ser positivo.")
         if self.optuna_n_jobs == 0:
             raise ValueError("OPTUNA_N_JOBS nao pode ser zero.")
-        if self.optuna_selection_objective not in {"validation_pr_auc", "temporal_stability"}:
+        if self.optuna_selection_objective not in {
+            "validation_pr_auc",
+            "temporal_stability",
+            "temporal_robustness",
+        }:
             raise ValueError(
-                "OPTUNA_SELECTION_OBJECTIVE deve ser 'validation_pr_auc' ou 'temporal_stability'."
+                "OPTUNA_SELECTION_OBJECTIVE deve ser 'validation_pr_auc', "
+                "'temporal_stability' ou 'temporal_robustness'."
             )
+        if not self.baseline_name:
+            raise ValueError("BASELINE_NAME nao pode ser vazio.")
         if not 0 < self.optuna_temporal_holdout_fraction < 0.5:
             raise ValueError("OPTUNA_TEMPORAL_HOLDOUT_FRACTION deve estar entre 0 e 0.5.")
         if self.optuna_pr_auc_stability_penalty < 0:
@@ -507,6 +600,17 @@ class Settings:
             raise ValueError("OPTUNA_RECALL_STABILITY_PENALTY nao pode ser negativo.")
         if self.optuna_last_window_penalty < 0:
             raise ValueError("OPTUNA_LAST_WINDOW_PENALTY nao pode ser negativo.")
+        for name, value in (
+            ("MIN_FOLD_RECALL_CANDIDATE", self.min_fold_recall_candidate),
+            ("MIN_LAST_FOLD_RECALL_CANDIDATE", self.min_last_fold_recall_candidate),
+            ("MAX_TEMPORAL_ALERT_RATE", self.max_temporal_alert_rate),
+            ("MAX_PR_AUC_TEMPORAL_DROP", self.max_pr_auc_temporal_drop),
+            ("MAX_RECALL_TEMPORAL_DROP", self.max_recall_temporal_drop),
+        ):
+            if not 0 <= value <= 1:
+                raise ValueError(f"{name} deve estar entre 0 e 1.")
+        if self.min_pr_auc_lift_over_random < 0:
+            raise ValueError("MIN_PR_AUC_LIFT_OVER_RANDOM nao pode ser negativo.")
         if self.external_benchmark_time_limit_seconds < 1:
             raise ValueError("EXTERNAL_BENCHMARK_TIME_LIMIT_SECONDS deve ser positivo.")
         if self.external_benchmark_max_models < 1:
@@ -584,6 +688,22 @@ class Settings:
                 "TRAINING_MAX_ROWS exige NEGATIVE_SAMPLING_ENABLED=true; "
                 "limite sequencial nao e permitido."
             )
+        supported_imbalance_strategies = {
+            "negative_sampling",
+            "class_weight",
+            "sample_weight",
+            "negative_sampling_plus_class_weight",
+        }
+        if self.imbalance_strategy not in supported_imbalance_strategies:
+            raise ValueError(
+                "IMBALANCE_STRATEGY invalida. Opcoes: "
+                + ", ".join(sorted(supported_imbalance_strategies))
+            )
+        if (
+            self.imbalance_strategy in {"negative_sampling", "negative_sampling_plus_class_weight"}
+            and not self.negative_sampling_enabled
+        ):
+            raise ValueError("IMBALANCE_STRATEGY selecionada exige NEGATIVE_SAMPLING_ENABLED=true.")
         object.__setattr__(self, "threshold_selection_strategy", strategy)
 
     @property
@@ -635,6 +755,7 @@ class Settings:
         return (
             self.pipeline_filename,
             self.metadata_filename,
+            self.metadata_json_filename,
             self.threshold_analysis_filename,
             self.threshold_cost_scenarios_filename,
             self.leakage_report_filename,
@@ -646,6 +767,7 @@ class Settings:
             self.out_of_time_metrics_filename,
             self.model_card_filename,
             self.baseline_decision_filename,
+            self.baseline_reference_filename,
             self.manifest_filename,
             self.geo_ablation_filename,
             self.robustness_report_filename,
@@ -667,13 +789,25 @@ class Settings:
             self.data_drift_categorical_filename,
             self.feature_stability_report_filename,
             self.feature_stability_markdown_filename,
+            self.feature_stability_by_period_filename,
             self.walk_forward_report_filename,
             self.walk_forward_markdown_filename,
             self.model_review_report_filename,
             self.threshold_recommendations_filename,
             self.error_attribution_report_filename,
+            self.error_attribution_markdown_filename,
+            self.error_attribution_by_group_filename,
+            self.performance_by_year_filename,
+            self.performance_by_month_filename,
+            self.performance_by_period_markdown_filename,
+            self.top_k_analysis_filename,
+            self.top_k_analysis_markdown_filename,
             self.optuna_trials_filename,
             self.optuna_study_filename,
+            self.objective_score_breakdown_filename,
+            self.objective_score_breakdown_markdown_filename,
+            self.baseline_challenger_comparison_filename,
+            self.baseline_challenger_comparison_markdown_filename,
             self.external_benchmark_filename,
             self.external_benchmark_summary_filename,
         )
@@ -733,11 +867,18 @@ class Settings:
     @property
     def model_params(self) -> dict[str, dict[str, Any]]:
         """Default model hyperparameters used by ModelFactory."""
-        return {
+        params = {
             "logistic_regression": {
                 "max_iter": 1000,
                 "class_weight": "balanced",
                 "solver": "lbfgs",
+                "random_state": self.random_state,
+            },
+            "logistic_regression_regularized": {
+                "C": 0.1,
+                "max_iter": 1500,
+                "class_weight": "balanced",
+                "solver": "liblinear",
                 "random_state": self.random_state,
             },
             "random_forest": {
@@ -746,6 +887,41 @@ class Settings:
                 "min_samples_leaf": 5,
                 "class_weight": "balanced_subsample",
                 "n_jobs": -1,
+                "random_state": self.random_state,
+            },
+            "random_forest_regularized": {
+                "n_estimators": 300,
+                "max_depth": 10,
+                "min_samples_leaf": 10,
+                "max_features": "sqrt",
+                "class_weight": "balanced_subsample",
+                "n_jobs": -1,
+                "random_state": self.random_state,
+            },
+            "extra_trees_regularized": {
+                "n_estimators": 300,
+                "max_depth": 12,
+                "min_samples_leaf": 10,
+                "max_features": "sqrt",
+                "class_weight": "balanced",
+                "n_jobs": -1,
+                "random_state": self.random_state,
+            },
+            "balanced_random_forest": {
+                "n_estimators": 300,
+                "max_depth": 12,
+                "min_samples_leaf": 5,
+                "n_jobs": -1,
+                "random_state": self.random_state,
+            },
+            "easy_ensemble": {
+                "n_estimators": 20,
+                "n_jobs": -1,
+                "random_state": self.random_state,
+            },
+            "rus_boost": {
+                "n_estimators": 200,
+                "learning_rate": 0.05,
                 "random_state": self.random_state,
             },
             "hist_gradient_boosting": {
@@ -763,9 +939,23 @@ class Settings:
                 "random_state": self.random_state,
                 "verbosity": 0,
             },
+            "xgboost_scale_pos_weight": {
+                "objective": "binary:logistic",
+                "eval_metric": "aucpr",
+                "tree_method": "hist",
+                "n_jobs": -1,
+                "random_state": self.random_state,
+                "verbosity": 0,
+            },
             "lightgbm": {
                 "objective": "binary",
                 "class_weight": "balanced",
+                "n_jobs": -1,
+                "random_state": self.random_state,
+                "verbosity": -1,
+            },
+            "lightgbm_scale_pos_weight": {
+                "objective": "binary",
                 "n_jobs": -1,
                 "random_state": self.random_state,
                 "verbosity": -1,
@@ -779,4 +969,21 @@ class Settings:
                 "random_seed": self.random_state,
                 "thread_count": -1,
             },
+            "catboost_regularized": {
+                "loss_function": "Logloss",
+                "eval_metric": "PRAUC",
+                "auto_class_weights": "Balanced",
+                "l2_leaf_reg": 10.0,
+                "allow_writing_files": False,
+                "verbose": False,
+                "random_seed": self.random_state,
+                "thread_count": -1,
+            },
         }
+        if self.imbalance_strategy in {"negative_sampling", "sample_weight"}:
+            for model_params in params.values():
+                model_params.pop("class_weight", None)
+                model_params.pop("auto_class_weights", None)
+            for name in ("xgboost_scale_pos_weight", "lightgbm_scale_pos_weight"):
+                params[name].pop("scale_pos_weight", None)
+        return params

@@ -9,11 +9,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import average_precision_score
-
 from src.config.settings import Settings
+from src.models.evaluate import evaluate_binary_classifier
 from src.models.model_factory import ModelFactory
-from src.models.threshold_analysis import build_threshold_table, select_business_threshold, threshold_grid
+from src.models.temporal_objective import (
+    temporal_robustness_score,
+    write_objective_breakdown,
+)
 from src.models.train import FraudModelTrainer
 from src.utils.logger import get_logger
 
@@ -89,6 +91,7 @@ class ModelSelectionResult:
     model_params: dict[str, Any]
     validation_pr_auc: float
     trial_count: int
+    best_trial_breakdown: dict[str, Any]
 
 
 class OptunaModelSelector:
@@ -106,7 +109,7 @@ class OptunaModelSelector:
         trials_path: Path,
         study_path: Path,
     ) -> ModelSelectionResult:
-        """Run seeded TPE search and refit the best configuration on training data."""
+        """Run an independent study per model family and refit its best eligible trial."""
         try:
             import optuna
         except ImportError as exc:
@@ -130,133 +133,161 @@ class OptunaModelSelector:
                 "um modelo nativo do scikit-learn."
             )
 
-        thresholds = threshold_grid(
-            self.settings.threshold_analysis_start,
-            self.settings.threshold_analysis_stop,
-            self.settings.threshold_analysis_step,
-        )
-        sampler = optuna.samplers.TPESampler(seed=self.settings.random_state)
-        study = optuna.create_study(
-            direction="maximize",
-            sampler=sampler,
-            study_name="fraud_model_selection",
-        )
-        for model_name in available_candidates:
-            study.enqueue_trial({"model_name": model_name})
+        windows = self._selection_windows(X_train, y_train, X_validation, y_validation)
+        studies = []
+        family_winners = []
+        for family_index, model_name in enumerate(available_candidates):
+            sampler = optuna.samplers.TPESampler(
+                seed=self.settings.random_state + family_index
+            )
+            pruner = (
+                optuna.pruners.MedianPruner()
+                if self.settings.optuna_enable_pruning
+                else optuna.pruners.NopPruner()
+            )
+            study = optuna.create_study(
+                direction="maximize",
+                sampler=sampler,
+                pruner=pruner,
+                study_name=self._study_name(model_name),
+            )
 
-        def objective(trial) -> float:
-            model_name = trial.suggest_categorical(
-                "model_name",
-                list(available_candidates),
-            )
-            params = self._suggest_params(
-                trial,
-                model_name,
-                positive_class_weight=self._positive_class_weight(y_train),
-            )
-            windows = self._selection_windows(X_train, y_train, X_validation, y_validation)
-            window_results = []
-            for window in windows:
-                pipeline = FraudModelTrainer(self.settings).train(
-                    window["X_train"],
-                    window["y_train"],
-                    model_name=model_name,
-                    model_params=params,
+            def objective(trial, selected_model: str = model_name) -> float:
+                params = self._suggest_params(
+                    trial,
+                    selected_model,
+                    positive_class_weight=(
+                        self._positive_class_weight(y_train)
+                        if self.settings.imbalance_strategy
+                        in {"class_weight", "negative_sampling_plus_class_weight"}
+                        else 1.0
+                    ),
                 )
-                scores = pipeline.predict_proba(window["X_validation"])[:, 1]
-                pr_auc = float(
-                    average_precision_score(window["y_validation"].to_numpy(), scores)
-                )
-                table = build_threshold_table(
-                    window["y_validation"].to_numpy(),
-                    scores,
-                    thresholds=thresholds,
-                    beta=self.settings.threshold_beta,
-                    false_positive_cost=self.settings.false_positive_cost,
-                    false_negative_cost=self.settings.false_negative_cost,
-                    split="validation",
-                )
-                selected_threshold, metrics = select_business_threshold(table)
-                metrics["alert_rate"] = float(
-                    (metrics["tp"] + metrics["fp"])
-                    / max(1.0, metrics["tp"] + metrics["fp"] + metrics["tn"] + metrics["fn"])
-                )
-                window_results.append(
-                    {
-                        "name": window["name"],
-                        "pr_auc": pr_auc,
-                        "threshold": selected_threshold,
-                        "metrics": metrics,
-                    }
-                )
-            validation_result = window_results[-1]
-            temporal_score = temporal_selection_score(
-                window_results,
-                pr_auc_stability_penalty=self.settings.optuna_pr_auc_stability_penalty,
-                recall_stability_penalty=self.settings.optuna_recall_stability_penalty,
-                last_window_penalty=self.settings.optuna_last_window_penalty,
-            )
-            if self.settings.optuna_selection_objective == "temporal_stability":
-                objective_value = temporal_score["selection_score"]
-            else:
-                objective_value = validation_result["pr_auc"]
-            selected_threshold = validation_result["threshold"]
-            metrics = validation_result["metrics"]
-            trial.set_user_attr("selected_threshold", selected_threshold)
-            trial.set_user_attr("precision", metrics["precision"])
-            trial.set_user_attr("recall", metrics["recall"])
-            trial.set_user_attr(
-                "alert_rate",
-                float(
-                    (metrics["tp"] + metrics["fp"])
-                    / max(1, metrics["tp"] + metrics["fp"] + metrics["tn"] + metrics["fn"])
-                ),
-            )
-            trial.set_user_attr("business_cost", metrics["business_cost"])
-            trial.set_user_attr("validation_pr_auc", validation_result["pr_auc"])
-            for name, value in temporal_score.items():
-                trial.set_user_attr(name, value)
-            trial.set_user_attr(
-                "selection_windows",
-                json.dumps(
-                    [
+                window_results: list[dict[str, Any]] = []
+                for fold_index, window in enumerate(windows):
+                    if window["y_train"].nunique() < 2:
+                        continue
+                    pipeline = FraudModelTrainer(self.settings).train(
+                        window["X_train"],
+                        window["y_train"],
+                        model_name=selected_model,
+                        model_params=params,
+                    )
+                    scores = pipeline.predict_proba(window["X_validation"])[:, 1]
+                    metrics = evaluate_binary_classifier(
+                        window["y_validation"].to_numpy(),
+                        scores,
+                        threshold=0.5,
+                        beta=self.settings.threshold_beta,
+                    )
+                    business_cost = (
+                        float(metrics["fp"]) * self.settings.false_positive_cost
+                        + float(metrics["fn"]) * self.settings.false_negative_cost
+                    )
+                    metrics["business_cost"] = business_cost
+                    metrics["cost_per_record"] = business_cost / max(
+                        1, len(window["y_validation"])
+                    )
+                    metrics["row_count"] = len(window["y_validation"])
+                    window_results.append(
                         {
-                            "name": item["name"],
-                            "pr_auc": item["pr_auc"],
-                            "threshold": item["threshold"],
-                            "recall": item["metrics"]["recall"],
-                            "alert_rate": item["metrics"]["alert_rate"],
-                            "business_cost": item["metrics"]["business_cost"],
+                            "name": window["name"],
+                            "pr_auc": metrics["pr_auc"],
+                            "metrics": metrics,
+                            "evaluation_status": metrics["evaluation_status"],
+                            "fraud_rate": float(window["y_validation"].mean()),
+                            "row_count": len(window["y_validation"]),
                         }
-                        for item in window_results
-                    ],
-                    sort_keys=True,
+                    )
+                    partial_valid = [
+                        item for item in window_results if item["pr_auc"] is not None
+                    ]
+                    if partial_valid:
+                        trial.report(
+                            float(np.mean([item["pr_auc"] for item in partial_valid])),
+                            step=fold_index,
+                        )
+                        # Report intermediate quality to the configured pruner. The
+                        # complete fold audit is still finished so every persisted
+                        # trial has a reproducible score decomposition.
+
+                breakdown = temporal_robustness_score(
+                    window_results,
+                    min_valid_fold_count=self.settings.min_valid_temporal_folds,
+                    min_fold_recall_required=self.settings.min_fold_recall_candidate,
+                    min_last_fold_recall_required=self.settings.min_last_fold_recall_candidate,
+                    min_pr_auc_lift_required=self.settings.min_pr_auc_lift_over_random,
+                    max_alert_rate=self.settings.max_temporal_alert_rate,
+                    max_pr_auc_temporal_drop=self.settings.max_pr_auc_temporal_drop,
+                    max_recall_temporal_drop=self.settings.max_recall_temporal_drop,
+                    false_negative_cost=self.settings.false_negative_cost,
+                )
+                trial.set_user_attr("model_name", selected_model)
+                trial.set_user_attr("evaluation_threshold", 0.5)
+                for name, value in breakdown.items():
+                    trial.set_user_attr(
+                        name,
+                        json.dumps(value, sort_keys=True) if isinstance(value, list) else value,
+                    )
+                trial.set_user_attr(
+                    "selection_windows",
+                    json.dumps(window_results, sort_keys=True),
+                )
+                if self.settings.optuna_enable_pruning and trial.should_prune():
+                    raise optuna.TrialPruned()
+                logger.info(
+                    "Optuna trial=%d | model=%s | eligible=%s | raw=%.6f | final=%.6f",
+                    trial.number,
+                    selected_model,
+                    breakdown["eligibility_status"],
+                    breakdown["raw_temporal_score"],
+                    breakdown["final_objective_score"],
+                )
+                return float(breakdown["final_objective_score"])
+
+            study.optimize(
+                objective,
+                n_trials=self.settings.optuna_trials_per_model,
+                timeout=(
+                    self.settings.optuna_timeout_per_model_seconds
+                    or self.settings.optuna_timeout_seconds
                 ),
+                n_jobs=self.settings.optuna_n_jobs,
+                catch=(ImportError, RuntimeError, ValueError, MemoryError),
             )
-            logger.info(
-                "Optuna trial=%d | model=%s | objective=%s | score=%.6f | validation_pr_auc=%.6f | temporal_range=%.6f | threshold=%.4f",
-                trial.number,
-                model_name,
-                self.settings.optuna_selection_objective,
-                objective_value,
-                validation_result["pr_auc"],
-                temporal_score["temporal_pr_auc_range"],
-                selected_threshold,
-            )
-            return objective_value
+            studies.append(study)
+            eligible_trials = [
+                trial
+                for trial in study.trials
+                if trial.state.name == "COMPLETE"
+                and trial.value is not None
+                and trial.user_attrs.get("eligibility_status") == "eligible"
+            ]
+            if eligible_trials:
+                winner = max(eligible_trials, key=lambda item: float(item.value))
+                family_winners.append((model_name, study, winner))
 
-        study.optimize(
-            objective,
-            n_trials=max(self.settings.optuna_trials, len(available_candidates)),
-            timeout=self.settings.optuna_timeout_seconds,
-            n_jobs=self.settings.optuna_n_jobs,
-            catch=(ImportError, RuntimeError, ValueError, MemoryError),
+        rows = self._trial_rows(studies)
+        pd.DataFrame(rows).to_csv(trials_path, index=False)
+        write_objective_breakdown(
+            rows,
+            trials_path.with_name(self.settings.objective_score_breakdown_filename),
+            trials_path.with_name(
+                self.settings.objective_score_breakdown_markdown_filename
+            ),
         )
-        if study.best_trial.value is None:
-            raise RuntimeError("Optuna nao concluiu nenhum trial valido.")
+        if not family_winners:
+            self._write_study_summary(
+                studies, unavailable_candidates, None, study_path
+            )
+            raise RuntimeError(
+                "Nenhum trial elegivel. Consulte objective_score_breakdown.csv."
+            )
 
-        best_model_name = str(study.best_trial.params["model_name"])
-        tuned_params = self._extract_model_params(study.best_trial.params, best_model_name)
+        best_model_name, best_study, best_trial = max(
+            family_winners, key=lambda item: float(item[2].value)
+        )
+        tuned_params = self._extract_model_params(best_trial.params, best_model_name)
         best_params = {
             **self.settings.model_params[best_model_name],
             **tuned_params,
@@ -267,43 +298,31 @@ class OptunaModelSelector:
             model_name=best_model_name,
             model_params=best_params,
         )
-        best_validation_pr_auc = float(
-            study.best_trial.user_attrs.get("validation_pr_auc", study.best_value)
+        validation_scores = pipeline.predict_proba(X_validation)[:, 1]
+        validation_metrics = evaluate_binary_classifier(
+            y_validation.to_numpy(), validation_scores, threshold=0.5
         )
-        self._write_trials(study, trials_path)
-        study_path.write_text(
-            json.dumps(
-                {
-                    "study_name": study.study_name,
-                    "direction": "maximize",
-                    "objective": self.settings.optuna_selection_objective,
-                    "sampler": "TPESampler",
-                    "seed": self.settings.random_state,
-                    "temporal_holdout_fraction": self.settings.optuna_temporal_holdout_fraction,
-                    "pr_auc_stability_penalty": self.settings.optuna_pr_auc_stability_penalty,
-                    "recall_stability_penalty": self.settings.optuna_recall_stability_penalty,
-                    "last_window_penalty": self.settings.optuna_last_window_penalty,
-                    "configured_candidates": list(configured_candidates),
-                    "available_candidates": list(available_candidates),
-                    "unavailable_candidates": list(unavailable_candidates),
-                    "best_trial_number": study.best_trial.number,
-                    "best_value": float(study.best_value),
-                    "best_validation_pr_auc": best_validation_pr_auc,
-                    "best_model_name": best_model_name,
-                    "best_model_params": best_params,
-                    "trial_count": len(study.trials),
-                },
-                indent=2,
-                ensure_ascii=True,
-            ),
-            encoding="utf-8",
+        best_validation_pr_auc = float(validation_metrics["pr_auc"] or 0.0)
+        self._write_study_summary(
+            studies,
+            unavailable_candidates,
+            {
+                "model_name": best_model_name,
+                "trial_number": best_trial.number,
+                "value": float(best_trial.value),
+                "model_params": best_params,
+                "validation_pr_auc_after_selection": best_validation_pr_auc,
+            },
+            study_path,
         )
+        trial_count = sum(len(study.trials) for study in studies)
         return ModelSelectionResult(
             pipeline=pipeline,
             model_name=best_model_name,
             model_params=best_params,
             validation_pr_auc=best_validation_pr_auc,
-            trial_count=len(study.trials),
+            trial_count=trial_count,
+            best_trial_breakdown=dict(best_trial.user_attrs),
         )
 
     def _selection_windows(
@@ -313,11 +332,17 @@ class OptunaModelSelector:
         X_validation: pd.DataFrame,
         y_validation: pd.Series,
     ) -> list[dict[str, Any]]:
-        """Build temporal windows used for model selection without touching test/OOT."""
+        """Build internal expanding windows; external validation/test/OOT stay untouched."""
         windows: list[dict[str, Any]] = []
-        if self.settings.optuna_selection_objective == "temporal_stability":
+        if self.settings.optuna_selection_objective in {
+            "temporal_stability",
+            "temporal_robustness",
+        }:
             holdout_size = max(10, int(len(X_train) * self.settings.optuna_temporal_holdout_fraction))
-            fold_count = min(max(1, self.settings.walk_forward_folds - 1), 3)
+            fold_count = max(
+                self.settings.min_valid_temporal_folds,
+                self.settings.walk_forward_folds - 1,
+            )
             for fold_index in range(fold_count):
                 train_end = len(X_train) - holdout_size * (fold_count - fold_index)
                 validation_end = train_end + holdout_size
@@ -327,12 +352,7 @@ class OptunaModelSelector:
                 fit_y = y_train.iloc[:train_end]
                 holdout_X = X_train.iloc[train_end:validation_end]
                 holdout_y = y_train.iloc[train_end:validation_end]
-                if (
-                    len(fit_X) >= 20
-                    and len(holdout_X) >= 10
-                    and fit_y.nunique() >= 2
-                    and holdout_y.nunique() >= 2
-                ):
+                if len(fit_X) >= 20 and len(holdout_X) >= 10 and fit_y.nunique() >= 2:
                     windows.append(
                         {
                             "name": f"train_temporal_fold_{len(windows) + 1}",
@@ -342,16 +362,72 @@ class OptunaModelSelector:
                             "y_validation": holdout_y,
                         }
                     )
-        windows.append(
-            {
-                "name": "official_validation_last_window",
-                "X_train": X_train,
-                "y_train": y_train,
-                "X_validation": X_validation,
-                "y_validation": y_validation,
-            }
-        )
+        if not windows:
+            raise ValueError("Nao foi possivel criar folds temporais internos para o Optuna.")
         return windows
+
+    @staticmethod
+    def _study_name(model_name: str) -> str:
+        names = {
+            "logistic_regression": "fraud_logistic_regression_search",
+            "logistic_regression_regularized": "fraud_logistic_regression_search",
+            "hist_gradient_boosting": "fraud_hist_gradient_boosting_search",
+            "random_forest": "fraud_random_forest_search",
+            "random_forest_regularized": "fraud_random_forest_search",
+        }
+        return names.get(model_name, f"fraud_{model_name}_search")
+
+    def _write_study_summary(
+        self,
+        studies: list[Any],
+        unavailable_candidates: tuple[str, ...],
+        winner: dict[str, Any] | None,
+        path: Path,
+    ) -> None:
+        payload = {
+            "direction": "maximize",
+            "objective": "eligible_temporal_quality_then_stability",
+            "optuna_uses_test": False,
+            "optuna_uses_out_of_time": False,
+            "threshold_uses_test": False,
+            "threshold_uses_out_of_time": False,
+            "threshold_selected_after_model": True,
+            "pruning_enabled": self.settings.optuna_enable_pruning,
+            "trials_per_model": self.settings.optuna_trials_per_model,
+            "timeout_per_model_seconds": self.settings.optuna_timeout_per_model_seconds,
+            "unavailable_candidates": list(unavailable_candidates),
+            "eligibility_policy": {
+                "min_valid_fold_count": self.settings.min_valid_temporal_folds,
+                "min_fold_recall": self.settings.min_fold_recall_candidate,
+                "min_last_fold_recall": self.settings.min_last_fold_recall_candidate,
+                "min_pr_auc_lift_over_random": self.settings.min_pr_auc_lift_over_random,
+                "max_alert_rate": self.settings.max_temporal_alert_rate,
+                "max_pr_auc_temporal_drop": self.settings.max_pr_auc_temporal_drop,
+                "max_recall_temporal_drop": self.settings.max_recall_temporal_drop,
+                "status": "experimental_not_production_policy",
+            },
+            "studies": [
+                {
+                    "study_name": study.study_name,
+                    "model_name": (
+                        study.trials[0].user_attrs.get("model_name")
+                        if study.trials
+                        else None
+                    ),
+                    "trial_count": len(study.trials),
+                    "eligible_trial_count": sum(
+                        trial.user_attrs.get("eligibility_status") == "eligible"
+                        for trial in study.trials
+                    ),
+                }
+                for study in studies
+            ],
+            "winner": winner,
+        }
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=True, allow_nan=False),
+            encoding="utf-8",
+        )
 
     def _suggest_params(
         self,
@@ -359,7 +435,7 @@ class OptunaModelSelector:
         model_name: str,
         positive_class_weight: float = 1.0,
     ) -> dict[str, Any]:
-        if model_name == "logistic_regression":
+        if model_name in {"logistic_regression", "logistic_regression_regularized"}:
             return {
                 "C": trial.suggest_float("logistic_regression__C", 1e-3, 100.0, log=True),
                 "solver": trial.suggest_categorical(
@@ -368,7 +444,12 @@ class OptunaModelSelector:
                 ),
                 "max_iter": 1500,
             }
-        if model_name == "random_forest":
+        if model_name in {
+            "random_forest",
+            "random_forest_regularized",
+            "extra_trees_regularized",
+            "balanced_random_forest",
+        }:
             return {
                 "n_estimators": trial.suggest_int(
                     "random_forest__n_estimators",
@@ -418,7 +499,7 @@ class OptunaModelSelector:
                     log=True,
                 ),
             }
-        if model_name == "xgboost":
+        if model_name in {"xgboost", "xgboost_scale_pos_weight"}:
             return {
                 "n_estimators": trial.suggest_int(
                     "xgboost__n_estimators",
@@ -462,7 +543,7 @@ class OptunaModelSelector:
                     sorted({1.0, float(np.sqrt(positive_class_weight)), positive_class_weight}),
                 ),
             }
-        if model_name == "lightgbm":
+        if model_name in {"lightgbm", "lightgbm_scale_pos_weight"}:
             return {
                 "n_estimators": trial.suggest_int(
                     "lightgbm__n_estimators",
@@ -503,7 +584,7 @@ class OptunaModelSelector:
                     log=True,
                 ),
             }
-        if model_name == "catboost":
+        if model_name in {"catboost", "catboost_regularized"}:
             return {
                 "iterations": trial.suggest_int(
                     "catboost__iterations",
@@ -537,6 +618,17 @@ class OptunaModelSelector:
                     step=16,
                 ),
             }
+        if model_name == "easy_ensemble":
+            return {
+                "n_estimators": trial.suggest_int("easy_ensemble__n_estimators", 10, 40, step=10),
+            }
+        if model_name == "rus_boost":
+            return {
+                "n_estimators": trial.suggest_int("rus_boost__n_estimators", 100, 400, step=50),
+                "learning_rate": trial.suggest_float(
+                    "rus_boost__learning_rate", 0.01, 0.20, log=True
+                ),
+            }
         raise ValueError(f"Modelo Optuna nao suportado: {model_name}")
 
     @staticmethod
@@ -553,7 +645,16 @@ class OptunaModelSelector:
         params: dict[str, Any],
         model_name: str,
     ) -> dict[str, Any]:
-        prefix = f"{model_name}__"
+        canonical = {
+            "logistic_regression_regularized": "logistic_regression",
+            "random_forest_regularized": "random_forest",
+            "extra_trees_regularized": "random_forest",
+            "balanced_random_forest": "random_forest",
+            "xgboost_scale_pos_weight": "xgboost",
+            "lightgbm_scale_pos_weight": "lightgbm",
+            "catboost_regularized": "catboost",
+        }.get(model_name, model_name)
+        prefix = f"{canonical}__"
         return {
             key.removeprefix(prefix): value
             for key, value in params.items()
@@ -561,36 +662,33 @@ class OptunaModelSelector:
         }
 
     @staticmethod
-    def _write_trials(study, path: Path) -> None:
-        rows = []
-        for trial in study.trials:
-            rows.append(
-                {
-                    "trial_number": trial.number,
+    def _trial_rows(studies: list[Any]) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        global_trial_number = 0
+        for study in studies:
+            for trial in study.trials:
+                attrs = trial.user_attrs
+                row = {
+                    "trial_number": global_trial_number,
+                    "family_trial_number": trial.number,
+                    "study_name": study.study_name,
                     "state": trial.state.name,
                     "selection_score": trial.value,
-                    "validation_pr_auc": trial.user_attrs.get("validation_pr_auc", trial.value),
-                    "mean_temporal_pr_auc": trial.user_attrs.get("mean_temporal_pr_auc"),
-                    "mean_temporal_recall": trial.user_attrs.get("mean_temporal_recall"),
-                    "min_temporal_pr_auc": trial.user_attrs.get("min_temporal_pr_auc"),
-                    "min_temporal_recall": trial.user_attrs.get("min_temporal_recall"),
-                    "temporal_pr_auc_range": trial.user_attrs.get("temporal_pr_auc_range"),
-                    "temporal_recall_range": trial.user_attrs.get("temporal_recall_range"),
-                    "stability_penalty": trial.user_attrs.get("stability_penalty"),
-                    "last_window_penalty": trial.user_attrs.get("last_window_penalty"),
-                    "last_window_pr_auc": trial.user_attrs.get("last_window_pr_auc"),
-                    "last_window_recall": trial.user_attrs.get("last_window_recall"),
-                    "selection_windows": trial.user_attrs.get("selection_windows"),
-                    "model_name": trial.params.get("model_name"),
+                    "model_name": attrs.get("model_name"),
                     "model_params": json.dumps(trial.params, sort_keys=True),
-                    "selected_threshold": trial.user_attrs.get("selected_threshold"),
-                    "precision": trial.user_attrs.get("precision"),
-                    "recall": trial.user_attrs.get("recall"),
-                    "alert_rate": trial.user_attrs.get("alert_rate"),
-                    "business_cost": trial.user_attrs.get("business_cost"),
+                    "evaluation_threshold": attrs.get("evaluation_threshold"),
+                    "selection_windows": attrs.get("selection_windows"),
                     "duration_seconds": (
                         trial.duration.total_seconds() if trial.duration is not None else None
                     ),
                 }
-            )
-        pd.DataFrame(rows).to_csv(path, index=False)
+                row.update(
+                    {
+                        key: value
+                        for key, value in attrs.items()
+                        if key not in {"model_name", "selection_windows"}
+                    }
+                )
+                rows.append(row)
+                global_trial_number += 1
+        return rows

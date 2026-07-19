@@ -40,6 +40,17 @@ class SamplingAuditService:
         train_after = splits_after_sampling.train
         positives_before = int(train_before[target_col].eq(1).sum())
         positives_after = int(train_after[target_col].eq(1).sum())
+        negatives_before = int(train_before[target_col].eq(0).sum())
+        negatives_after = int(train_after[target_col].eq(0).sum())
+        effective_negative_ratio = (
+            negatives_after / positives_after if positives_after else None
+        )
+        configured_negative_ratio = self.settings.training_negative_positive_ratio
+        sampling_ratio_deviation = (
+            effective_negative_ratio - configured_negative_ratio
+            if effective_negative_ratio is not None and configured_negative_ratio is not None
+            else None
+        )
         positives_removed = positives_before - positives_after
         positive_coverage = (
             positives_after / positives_before if positives_before else 1.0
@@ -119,6 +130,20 @@ class SamplingAuditService:
             "negative_sampling_strategy": self.settings.negative_sampling_strategy,
             "negative_sampling_by": self.settings.negative_sampling_by,
             "negative_to_positive_ratio": self.settings.training_negative_positive_ratio,
+            "configured_negative_ratio": configured_negative_ratio,
+            "effective_negative_ratio": effective_negative_ratio,
+            "sampling_ratio_deviation": sampling_ratio_deviation,
+            "sampling_enforce_fixed_ratio": self.settings.sampling_enforce_fixed_ratio,
+            "positive_rate_before_sampling": (
+                positives_before / (positives_before + negatives_before)
+                if positives_before + negatives_before
+                else None
+            ),
+            "positive_rate_after_sampling": (
+                positives_after / (positives_after + negatives_after)
+                if positives_after + negatives_after
+                else None
+            ),
             "training_limit_applied": len(train_after) < len(train_before),
             "training_limit_applied_stage": "after_supervised_inner_join_and_temporal_split_train_only",
             "sequential_training_limit_detected": False,
@@ -255,6 +280,9 @@ class SamplingAuditService:
                             "positive_count": positives,
                             "negative_count": negatives,
                             "fraud_rate": positives / len(group) if len(group) else 0.0,
+                            "effective_negative_ratio": (
+                                negatives / positives if positives else None
+                            ),
                         }
                     )
         return pd.DataFrame(rows)
@@ -338,6 +366,9 @@ class SamplingAuditService:
             f"- Estagio do limite: `{payload['training_limit_applied_stage']}`",
             f"- Estrategia: `{payload['negative_sampling_strategy']}` por `{payload['negative_sampling_by']}`",
             f"- Ratio negativo/positivo: `{payload['negative_to_positive_ratio']}`",
+            f"- Ratio efetivo: `{payload['effective_negative_ratio']}`",
+            f"- Desvio da ratio configurada: `{payload['sampling_ratio_deviation']}`",
+            f"- Prevalencia antes/depois: `{payload['positive_rate_before_sampling']}` / `{payload['positive_rate_after_sampling']}`",
             f"- Positivos antes/depois: {before['positive_count']} / {after['positive_count']}",
             f"- Positivos preservados: {payload['positives_preserved_pct']:.2%}",
             f"- Negativos antes/depois: {before['negative_count']} / {after['negative_count']}",

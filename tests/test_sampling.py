@@ -68,6 +68,27 @@ def test_temporal_sampling_is_reproducible_and_reduces_only_negatives() -> None:
     assert int(first["is_fraud"].eq(0).sum()) == 12
 
 
+def test_fixed_negative_ratio_is_consistent_across_expanding_folds() -> None:
+    training = _training_frame()
+    effective_ratios = []
+    for row_count in (30, 60):
+        sampled = temporal_stratified_negative_sampling(
+            training.iloc[:row_count],
+            target_col="is_fraud",
+            date_col="date",
+            max_rows=12,
+            negative_to_positive_ratio=2,
+            period="M",
+            random_state=11,
+            enforce_fixed_ratio=True,
+        )
+        positives = int(sampled["is_fraud"].eq(1).sum())
+        negatives = int(sampled["is_fraud"].eq(0).sum())
+        effective_ratios.append(negatives / positives)
+
+    assert effective_ratios == [2.0, 2.0]
+
+
 def test_temporal_sampling_fails_instead_of_removing_positives() -> None:
     training = _training_frame()
 

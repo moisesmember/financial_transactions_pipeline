@@ -333,7 +333,11 @@ def test_baseline_decision_rejects_bad_last_walk_forward_fold(tmp_path) -> None:
 
 
 def test_baseline_decision_approves_when_all_gates_pass_and_promotion_requested(tmp_path) -> None:
-    settings = Settings(project_root=tmp_path, promote_baseline=True)
+    settings = Settings(
+        project_root=tmp_path,
+        promote_baseline=True,
+        human_approval_confirmed=True,
+    )
     required = tmp_path / "artifact"
     required.write_text("ok", encoding="utf-8")
     test_metrics = {
@@ -357,3 +361,34 @@ def test_baseline_decision_approves_when_all_gates_pass_and_promotion_requested(
     )
 
     assert decision["decision"] == "approved"
+
+
+def test_baseline_decision_requires_explicit_human_approval(tmp_path) -> None:
+    settings = Settings(project_root=tmp_path, promote_baseline=True)
+    required = tmp_path / "artifact"
+    required.write_text("ok", encoding="utf-8")
+    metrics = {
+        "pr_auc": 0.8,
+        "recall": 0.95,
+        "alert_rate": 0.02,
+        "tp": 95,
+        "fp": 190,
+        "tn": 9700,
+        "fn": 5,
+    }
+
+    decision = BaselineDecisionService(settings).decide(
+        {
+            "validation_metrics": metrics,
+            "test_metrics": metrics,
+            "out_of_time_metrics": {**metrics, "pr_auc": 0.75},
+        },
+        {"status": "pass", "warnings": [], "checks": {}},
+        [required],
+        target_audit={"status": "pass"},
+        drift_report={"status": "pass"},
+        robustness_report={"status": "pass", "geo_ablation": {"status": "pass"}},
+    )
+
+    assert decision["decision"] == "pending_review"
+    assert any("humana" in warning.lower() for warning in decision["warnings"])

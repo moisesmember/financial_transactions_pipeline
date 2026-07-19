@@ -56,9 +56,24 @@ class TrainingRequest(BaseModel):
     )
 
     threshold_selection_strategy: Literal["business_cost", "fbeta"] | None = None
-    threshold_analysis_start: float | None = Field(default=None, ge=0.0, le=1.0)
-    threshold_analysis_stop: float | None = Field(default=None, ge=0.0, le=1.0)
-    threshold_analysis_step: float | None = Field(default=None, gt=0.0, le=1.0)
+    threshold_analysis_start: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("THRESHOLD_ANALYSIS_START", "THRESHOLD_MIN"),
+    )
+    threshold_analysis_stop: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("THRESHOLD_ANALYSIS_STOP", "THRESHOLD_MAX"),
+    )
+    threshold_analysis_step: float | None = Field(
+        default=None,
+        gt=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("THRESHOLD_ANALYSIS_STEP", "THRESHOLD_STEP"),
+    )
     false_positive_cost: float | None = Field(default=None, ge=0.0)
     false_negative_cost: float | None = Field(default=None, ge=0.0)
     threshold_cost_scenarios: tuple[tuple[float, float], ...] | None = None
@@ -79,11 +94,28 @@ class TrainingRequest(BaseModel):
     walk_forward_folds: int | None = Field(default=None, ge=2)
     exclude_geographic_features: bool | None = None
     feature_exclusions: tuple[str, ...] | None = None
-    optuna_selection_objective: Literal["validation_pr_auc", "temporal_stability"] | None = None
+    optuna_selection_objective: Literal[
+        "validation_pr_auc", "temporal_stability", "temporal_robustness"
+    ] | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "OPTUNA_SELECTION_OBJECTIVE", "MODEL_SELECTION_OBJECTIVE"
+        ),
+    )
     optuna_temporal_holdout_fraction: float | None = Field(default=None, gt=0.0, lt=0.5)
     optuna_pr_auc_stability_penalty: float | None = Field(default=None, ge=0.0)
     optuna_recall_stability_penalty: float | None = Field(default=None, ge=0.0)
     optuna_last_window_penalty: float | None = Field(default=None, ge=0.0)
+    optuna_trials_per_model: int | None = Field(default=None, ge=1)
+    optuna_timeout_per_model_seconds: int | None = Field(default=None, ge=1)
+    optuna_enable_pruning: bool | None = None
+    min_valid_temporal_folds: int | None = Field(default=None, ge=1)
+    min_fold_recall_candidate: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_last_fold_recall_candidate: float | None = Field(default=None, ge=0.0, le=1.0)
+    min_pr_auc_lift_over_random: float | None = Field(default=None, ge=0.0)
+    max_temporal_alert_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_pr_auc_temporal_drop: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_recall_temporal_drop: float | None = Field(default=None, ge=0.0, le=1.0)
     training_history_save_pipeline: bool | None = None
     mlflow_tracking_enabled: bool | None = None
     mlflow_tracking_uri: str | None = None
@@ -106,7 +138,18 @@ class TrainingRequest(BaseModel):
             "NEGATIVE_TO_POSITIVE_RATIO",
         ),
     )
+    sampling_enforce_fixed_ratio: bool | None = None
+    imbalance_strategy: Literal[
+        "negative_sampling",
+        "class_weight",
+        "sample_weight",
+        "negative_sampling_plus_class_weight",
+    ] | None = None
     baseline_warning_justification: str | None = None
+    baseline_name: str | None = None
+    sampling_fix_applied: bool | None = None
+    previous_baselines_invalidated_by_sampling_bias: bool | None = None
+    human_approval_confirmed: bool | None = None
     promotion_min_recall: float | None = Field(default=None, ge=0.0, le=1.0)
     promotion_max_alert_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     promotion_max_oot_pr_auc_drop: float | None = Field(default=None, ge=0.0, le=1.0)

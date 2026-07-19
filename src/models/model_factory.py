@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from importlib.util import find_spec
 
 from sklearn.base import ClassifierMixin
-from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier, HistGradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 
 from src.config.settings import Settings
@@ -47,6 +47,40 @@ class HistGradientBoostingStrategy(ModelStrategy):
         return HistGradientBoostingClassifier(**params)
 
 
+class ExtraTreesStrategy(ModelStrategy):
+    """Create a regularized extremely randomized trees classifier."""
+
+    def create(self, params: dict) -> ClassifierMixin:
+        return ExtraTreesClassifier(**params)
+
+
+class BalancedRandomForestStrategy(ModelStrategy):
+    dependency = "imblearn"
+
+    def create(self, params: dict) -> ClassifierMixin:
+        from imblearn.ensemble import BalancedRandomForestClassifier
+
+        return BalancedRandomForestClassifier(**params)
+
+
+class EasyEnsembleStrategy(ModelStrategy):
+    dependency = "imblearn"
+
+    def create(self, params: dict) -> ClassifierMixin:
+        from imblearn.ensemble import EasyEnsembleClassifier
+
+        return EasyEnsembleClassifier(**params)
+
+
+class RUSBoostStrategy(ModelStrategy):
+    dependency = "imblearn"
+
+    def create(self, params: dict) -> ClassifierMixin:
+        from imblearn.ensemble import RUSBoostClassifier
+
+        return RUSBoostClassifier(**params)
+
+
 class XGBoostStrategy(ModelStrategy):
     """Create an XGBoost classifier without forcing the optional dependency."""
 
@@ -85,11 +119,20 @@ class ModelFactory:
 
     _strategies: dict[str, ModelStrategy] = {
         "logistic_regression": LogisticRegressionStrategy(),
+        "logistic_regression_regularized": LogisticRegressionStrategy(),
         "random_forest": RandomForestStrategy(),
+        "random_forest_regularized": RandomForestStrategy(),
+        "extra_trees_regularized": ExtraTreesStrategy(),
+        "balanced_random_forest": BalancedRandomForestStrategy(),
+        "easy_ensemble": EasyEnsembleStrategy(),
+        "rus_boost": RUSBoostStrategy(),
         "hist_gradient_boosting": HistGradientBoostingStrategy(),
         "xgboost": XGBoostStrategy(),
+        "xgboost_scale_pos_weight": XGBoostStrategy(),
         "lightgbm": LightGBMStrategy(),
+        "lightgbm_scale_pos_weight": LightGBMStrategy(),
         "catboost": CatBoostStrategy(),
+        "catboost_regularized": CatBoostStrategy(),
     }
 
     def __init__(self, settings: Settings) -> None:

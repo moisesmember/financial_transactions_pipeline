@@ -19,6 +19,7 @@ from src.data.split_data import DataSplits, TemporalSplitter
 from src.features.cleaning import FraudDataCleaner
 from src.ingestion.import_service import DatasetImportService
 from src.models.baseline import BaselineRegistry
+from src.models.baseline_challenger import write_baseline_challenger_comparison
 from src.models.baseline_decision import BaselineDecisionService
 from src.models.calibration import write_calibration_artifacts
 from src.models.data_drift import DataDriftReportService
@@ -37,14 +38,17 @@ from src.models.optuna_search import OptunaModelSelector
 from src.models.robustness import run_geographic_ablation, write_robustness_reports
 from src.models.sampling_audit import SamplingAuditService
 from src.models.target_audit import TargetAuditService
+from src.models.temporal_performance import write_temporal_performance_artifacts
 from src.models.threshold import find_best_threshold
 from src.models.threshold_analysis import (
     build_threshold_recommendations,
     build_cost_scenario_summary,
     build_threshold_table,
     select_business_threshold,
+    threshold_at_search_boundary,
     threshold_grid,
 )
+from src.models.top_k_analysis import write_top_k_analysis
 from src.models.train import FraudModelTrainer
 from src.models.training_history import TrainingHistoryRegistry
 from src.models.versioning import code_version, dataset_fingerprint, experiment_fingerprint
@@ -63,9 +67,9 @@ class TrainingResult:
 
     model_name: str
     threshold: float
-    validation_metrics: dict[str, float]
-    test_metrics: dict[str, float]
-    out_of_time_metrics: dict[str, float]
+    validation_metrics: dict[str, Any]
+    test_metrics: dict[str, Any]
+    out_of_time_metrics: dict[str, Any]
     pipeline_path: Path
     metadata_path: Path
     threshold_analysis_path: Path
@@ -118,12 +122,17 @@ class TrainingPipeline:
             full_splits.train[self.settings.target_column].eq(1).sum()
         )
         limited_train = full_splits.train.copy()
-        if self.settings.negative_sampling_enabled:
+        negative_sampling_used = self.settings.imbalance_strategy in {
+            "negative_sampling",
+            "negative_sampling_plus_class_weight",
+        }
+        if self.settings.negative_sampling_enabled and negative_sampling_used:
             limited_train = TrainingDataLimiter(
                 self.settings.training_max_rows,
                 negative_positive_ratio=self.settings.training_negative_positive_ratio,
                 random_state=self.settings.random_state,
                 period="M" if self.settings.negative_sampling_by == "month" else "Y",
+                enforce_fixed_ratio=self.settings.sampling_enforce_fixed_ratio,
             ).apply(
                 full_splits.train,
                 target_column=self.settings.target_column,
@@ -173,6 +182,9 @@ class TrainingPipeline:
                 "pr_auc_stability_penalty": self.settings.optuna_pr_auc_stability_penalty,
                 "recall_stability_penalty": self.settings.optuna_recall_stability_penalty,
                 "last_window_penalty": self.settings.optuna_last_window_penalty,
+                "best_trial_breakdown": selection.best_trial_breakdown,
+                "optuna_uses_test": False,
+                "optuna_uses_out_of_time": False,
             }
         else:
             selected_model_name = self.settings.model_name
@@ -198,6 +210,15 @@ class TrainingPipeline:
                 ),
                 encoding="utf-8",
             )
+            pd.DataFrame().to_csv(
+                self.settings.artifact_path(
+                    self.settings.objective_score_breakdown_filename
+                ),
+                index=False,
+            )
+            self.settings.artifact_path(
+                self.settings.objective_score_breakdown_markdown_filename
+            ).write_text("# Objective Score Breakdown\n\nOptuna disabled.\n", encoding="utf-8")
             selection_metadata = {"engine": "fixed", "trial_count": 0}
         run_id = TrainingHistoryRegistry.new_run_id(selected_model_name)
         validation_scores = self._predict_scores(pipeline, X_val)
@@ -226,6 +247,18 @@ class TrainingPipeline:
             threshold,
             threshold_metrics,
         )
+        threshold_is_at_search_boundary = threshold_at_search_boundary(
+            threshold,
+            self.settings.threshold_analysis_start,
+            self.settings.threshold_analysis_stop,
+        )
+        if threshold_is_at_search_boundary:
+            logger.warning(
+                "Threshold escolhido na fronteira da busca: %.4f no intervalo [%.4f, %.4f].",
+                threshold,
+                self.settings.threshold_analysis_start,
+                self.settings.threshold_analysis_stop,
+            )
 
         train_scores = self._predict_scores(pipeline, X_train)
         test_scores = self._predict_scores(pipeline, X_test)
@@ -259,6 +292,14 @@ class TrainingPipeline:
         threshold_recommendations = build_threshold_recommendations(
             threshold_analysis,
             max_alert_rate=self.settings.promotion_max_alert_rate,
+        )
+        threshold_recommendations["threshold_at_search_boundary"] = (
+            threshold_is_at_search_boundary
+        )
+        threshold_recommendations["warning"] = (
+            "Selected threshold is at the search boundary; inspect a wider validation-only grid."
+            if threshold_is_at_search_boundary
+            else None
         )
         self.settings.artifact_path(self.settings.threshold_recommendations_filename).write_text(
             json.dumps(
@@ -298,17 +339,98 @@ class TrainingPipeline:
             threshold=threshold,
             beta=self.settings.threshold_beta,
         )
+        split_frames = {
+            "train": X_train,
+            "validation": X_val,
+            "test": X_test,
+            "out_of_time": X_out_of_time,
+        }
+        split_targets = {
+            "train": y_train,
+            "validation": y_val,
+            "test": y_test,
+            "out_of_time": y_out_of_time,
+        }
+        split_scores = {
+            "train": train_scores,
+            "validation": validation_scores,
+            "test": test_scores,
+            "out_of_time": out_of_time_scores,
+        }
+        write_temporal_performance_artifacts(
+            split_frames,
+            split_targets,
+            split_scores,
+            date_column=splits.time_column,
+            threshold=threshold,
+            beta=self.settings.threshold_beta,
+            false_positive_cost=self.settings.false_positive_cost,
+            false_negative_cost=self.settings.false_negative_cost,
+            year_path=self.settings.artifact_path(self.settings.performance_by_year_filename),
+            month_path=self.settings.artifact_path(self.settings.performance_by_month_filename),
+            markdown_path=self.settings.artifact_path(
+                self.settings.performance_by_period_markdown_filename
+            ),
+        )
+        top_k_analysis = write_top_k_analysis(
+            {
+                "validation": (y_val.to_numpy(), validation_scores),
+                "test": (y_test.to_numpy(), test_scores),
+                "out_of_time": (y_out_of_time.to_numpy(), out_of_time_scores),
+            },
+            self.settings.top_k_values,
+            self.settings.false_positive_cost,
+            self.settings.false_negative_cost,
+            self.settings.artifact_path(self.settings.top_k_analysis_filename),
+            self.settings.artifact_path(self.settings.top_k_analysis_markdown_filename),
+        )
+
+        walk_forward_report = WalkForwardValidator(self.settings).run(
+            cleaned_for_split,
+            splits.time_column,
+            selected_model_name,
+            selected_model_params,
+            self.settings.artifacts_dir,
+        )
+        threshold_recommendations["top_k_analysis"] = {
+            "artifact": self.settings.top_k_analysis_filename,
+            "best_by_split": (
+                top_k_analysis.sort_values(["split", "business_cost", "requested_k"])
+                .groupby("split", as_index=False)
+                .first()
+                .to_dict(orient="records")
+            ),
+            "rationale": (
+                "Operational capacity analysis only; it cannot override reject gates."
+            ),
+        }
+        threshold_recommendations["walk_forward"] = {
+            "status": walk_forward_report.get("status"),
+            "summary": walk_forward_report.get("summary"),
+            "rationale": "Last and worst temporal folds are independent decision gates.",
+        }
+        self.settings.artifact_path(self.settings.threshold_recommendations_filename).write_text(
+            json.dumps(
+                threshold_recommendations,
+                indent=2,
+                ensure_ascii=True,
+                allow_nan=False,
+            ),
+            encoding="utf-8",
+        )
 
         build_error_attribution_report(
-            {"validation": X_val, "test": X_test, "out_of_time": X_out_of_time},
-            {"validation": y_val, "test": y_test, "out_of_time": y_out_of_time},
-            {
-                "validation": validation_scores,
-                "test": test_scores,
-                "out_of_time": out_of_time_scores,
-            },
+            split_frames,
+            split_targets,
+            split_scores,
             threshold,
             self.settings.artifact_path(self.settings.error_attribution_report_filename),
+            markdown_path=self.settings.artifact_path(
+                self.settings.error_attribution_markdown_filename
+            ),
+            by_group_path=self.settings.artifact_path(
+                self.settings.error_attribution_by_group_filename
+            ),
         )
         leakage_report = LeakageAuditService(self.settings).build_report(
             splits,
@@ -335,6 +457,12 @@ class TrainingPipeline:
             self.settings.artifacts_dir,
             important_features=important_features,
         )
+        feature_stability = json.loads(
+            self.settings.artifact_path(
+                self.settings.feature_stability_report_filename
+            ).read_text(encoding="utf-8")
+        )
+        high_drift_features = tuple(feature_stability.get("features_with_high_drift", []))
         metrics_by_split = {
             "train": {
                 **train_metrics,
@@ -381,6 +509,7 @@ class TrainingPipeline:
                 y_out_of_time,
                 metrics_by_split,
                 feature_importance,
+                high_drift_features=high_drift_features,
             )
         else:
             robustness_results = pd.DataFrame()
@@ -392,13 +521,6 @@ class TrainingPipeline:
             robustness_results,
             self.settings.artifacts_dir,
             self.settings,
-        )
-        walk_forward_report = WalkForwardValidator(self.settings).run(
-            cleaned_for_split,
-            splits.time_column,
-            selected_model_name,
-            selected_model_params,
-            self.settings.artifacts_dir,
         )
         benchmark_results_path = self.settings.artifact_path(
             self.settings.external_benchmark_filename
@@ -482,6 +604,8 @@ class TrainingPipeline:
             deciles_path=self.settings.artifact_path(self.settings.score_deciles_filename),
             metrics_path=self.settings.artifact_path(self.settings.calibration_metrics_filename),
             curve_path=self.settings.artifact_path(self.settings.calibration_curve_filename),
+            false_positive_cost=self.settings.false_positive_cost,
+            false_negative_cost=self.settings.false_negative_cost,
         )
         self.settings.artifact_path(self.settings.out_of_time_metrics_filename).write_text(
             json.dumps(out_of_time_metrics, indent=2, ensure_ascii=True, allow_nan=False),
@@ -503,6 +627,14 @@ class TrainingPipeline:
             "negative_sampling_strategy": self.settings.negative_sampling_strategy,
             "negative_sampling_by": self.settings.negative_sampling_by,
             "training_negative_positive_ratio": self.settings.training_negative_positive_ratio,
+            "sampling_enforce_fixed_ratio": self.settings.sampling_enforce_fixed_ratio,
+            "imbalance_strategy": self.settings.imbalance_strategy,
+            "baseline_name": self.settings.baseline_name,
+            "sampling_fix_applied": self.settings.sampling_fix_applied,
+            "previous_baselines_invalidated_by_sampling_bias": (
+                self.settings.previous_baselines_invalidated_by_sampling_bias
+            ),
+            "human_approval_confirmed": self.settings.human_approval_confirmed,
             "feature_exclusions": self.settings.feature_exclusions,
             "exclude_geographic_features": self.settings.exclude_geographic_features,
             "optuna_selection_objective": self.settings.optuna_selection_objective,
@@ -527,6 +659,23 @@ class TrainingPipeline:
             "negative_sampling_strategy": self.settings.negative_sampling_strategy,
             "negative_sampling_by": self.settings.negative_sampling_by,
             "training_negative_positive_ratio": self.settings.training_negative_positive_ratio,
+            "sampling_enforce_fixed_ratio": self.settings.sampling_enforce_fixed_ratio,
+            "imbalance_strategy": self.settings.imbalance_strategy,
+            "class_weight_used": self.settings.imbalance_strategy in {
+                "class_weight", "negative_sampling_plus_class_weight"
+            },
+            "sample_weight_used": self.settings.imbalance_strategy == "sample_weight",
+            "negative_sampling_used": negative_sampling_used,
+            "optuna_uses_test": False,
+            "optuna_uses_out_of_time": False,
+            "threshold_uses_test": False,
+            "threshold_uses_out_of_time": False,
+            "baseline_name": self.settings.baseline_name,
+            "sampling_fix_applied": self.settings.sampling_fix_applied,
+            "previous_baselines_invalidated_by_sampling_bias": (
+                self.settings.previous_baselines_invalidated_by_sampling_bias
+            ),
+            "human_approval_confirmed": self.settings.human_approval_confirmed,
             "strict_leakage_prevention": self.settings.strict_leakage_prevention,
             "dataset": {
                 "train_rows": len(y_train),
@@ -569,6 +718,9 @@ class TrainingPipeline:
                 "analysis_start": self.settings.threshold_analysis_start,
                 "analysis_stop": self.settings.threshold_analysis_stop,
                 "analysis_step": self.settings.threshold_analysis_step,
+                "threshold_at_search_boundary": threshold_is_at_search_boundary,
+                "uses_test": False,
+                "uses_out_of_time": False,
             },
             "operational_costs": {
                 "validation": (
@@ -590,6 +742,12 @@ class TrainingPipeline:
             "data_drift_status": drift_report["status"],
             "robustness_status": robustness_report["status"],
             "walk_forward_status": walk_forward_report["status"],
+            "top_k_best_oot": (
+                top_k_analysis.loc[top_k_analysis["split"].eq("out_of_time")]
+                .sort_values(["business_cost", "requested_k"])
+                .head(1)
+                .to_dict(orient="records")
+            ),
             "dataset_version": dataset_version,
             "dataset_sha256": dataset_version,
             "feature_set_version": self.settings.feature_set_version,
@@ -610,6 +768,10 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.out_of_time_metrics_filename),
             self.settings.artifact_path(self.settings.optuna_trials_filename),
             self.settings.artifact_path(self.settings.optuna_study_filename),
+            self.settings.artifact_path(self.settings.objective_score_breakdown_filename),
+            self.settings.artifact_path(
+                self.settings.objective_score_breakdown_markdown_filename
+            ),
             self.settings.artifact_path(self.settings.target_audit_filename),
             self.settings.artifact_path(self.settings.target_audit_markdown_filename),
             self.settings.artifact_path(self.settings.sampling_audit_filename),
@@ -625,6 +787,13 @@ class TrainingPipeline:
             self.settings.artifact_path(self.settings.geo_ablation_report_filename),
             self.settings.artifact_path(self.settings.threshold_recommendations_filename),
             self.settings.artifact_path(self.settings.error_attribution_report_filename),
+            self.settings.artifact_path(self.settings.error_attribution_markdown_filename),
+            self.settings.artifact_path(self.settings.error_attribution_by_group_filename),
+            self.settings.artifact_path(self.settings.performance_by_year_filename),
+            self.settings.artifact_path(self.settings.performance_by_month_filename),
+            self.settings.artifact_path(self.settings.performance_by_period_markdown_filename),
+            self.settings.artifact_path(self.settings.top_k_analysis_filename),
+            self.settings.artifact_path(self.settings.top_k_analysis_markdown_filename),
         ]
         baseline_decision = BaselineDecisionService(self.settings).decide(
             metadata,
@@ -639,9 +808,73 @@ class TrainingPipeline:
         metadata["baseline_decision"] = baseline_decision
         if baseline_decision["decision"] == "reject":
             metadata["status"] = "rejected"
+        baseline_metadata_path = (
+            self.settings.baseline_dir / self.settings.baseline_metadata_filename
+        )
+        baseline_metadata = (
+            json.loads(baseline_metadata_path.read_text(encoding="utf-8"))
+            if baseline_metadata_path.exists()
+            else None
+        )
+        baseline_comparison = write_baseline_challenger_comparison(
+            baseline_metadata,
+            metadata,
+            self.settings.artifact_path(
+                self.settings.baseline_challenger_comparison_filename
+            ),
+            self.settings.artifact_path(
+                self.settings.baseline_challenger_comparison_markdown_filename
+            ),
+        )
+        metadata["baseline_challenger_comparison"] = baseline_comparison
         joblib.dump(metadata, self.settings.metadata_path)
+        self.settings.artifact_path(self.settings.metadata_json_filename).write_text(
+            json.dumps(
+                metadata,
+                indent=2,
+                ensure_ascii=True,
+                allow_nan=False,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
         self.settings.artifact_path(self.settings.baseline_decision_filename).write_text(
             json.dumps(baseline_decision, indent=2, ensure_ascii=True),
+            encoding="utf-8",
+        )
+        self.settings.artifact_path(self.settings.baseline_reference_filename).write_text(
+            json.dumps(
+                {
+                    "baseline_name": self.settings.baseline_name,
+                    "sampling_fix_applied": self.settings.sampling_fix_applied,
+                    "previous_baselines_invalidated_by_sampling_bias": (
+                        self.settings.previous_baselines_invalidated_by_sampling_bias
+                    ),
+                    "run_id": run_id,
+                    "model_name": selected_model_name,
+                    "threshold": threshold,
+                    "decision": baseline_decision["decision"],
+                    "best_rejected_baseline": {
+                        "model_name": baseline_comparison["best_rejected_baseline"]["model_name"],
+                        "status": "best_rejected_baseline",
+                    },
+                    "challenger": {
+                        "model_name": baseline_comparison["challenger"]["model_name"],
+                        "status": baseline_comparison["challenger"]["role"],
+                    },
+                    "challenger_replaces_baseline": baseline_comparison[
+                        "challenger_replaces_baseline"
+                    ],
+                    "notes": [
+                        "As rodadas anteriores tinham vies temporal causado por limite sequencial.",
+                        "Uma rodada rejeitada nao substitui automaticamente o baseline anterior.",
+                        "Baseline de referencia nao significa modelo aprovado para producao.",
+                    ],
+                },
+                indent=2,
+                ensure_ascii=True,
+                allow_nan=False,
+            ),
             encoding="utf-8",
         )
         write_model_card(

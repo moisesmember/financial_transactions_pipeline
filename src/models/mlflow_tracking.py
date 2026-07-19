@@ -164,6 +164,8 @@ class MlflowTrackingService:
             "model_selection_trial_count": model_selection.get("trial_count"),
             "optuna_temporal_holdout_fraction": model_selection.get("temporal_holdout_fraction"),
             "optuna_pr_auc_stability_penalty": model_selection.get("pr_auc_stability_penalty"),
+            "optuna_uses_test": metadata.get("optuna_uses_test"),
+            "optuna_uses_out_of_time": metadata.get("optuna_uses_out_of_time"),
             "threshold_strategy": threshold_selection.get("strategy"),
             "false_positive_cost": threshold_selection.get("false_positive_cost"),
             "false_negative_cost": threshold_selection.get("false_negative_cost"),
@@ -180,6 +182,17 @@ class MlflowTrackingService:
             "negative_sampling_strategy": metadata.get("negative_sampling_strategy"),
             "negative_sampling_by": metadata.get("negative_sampling_by"),
             "training_negative_positive_ratio": metadata.get("training_negative_positive_ratio"),
+            "sampling_enforce_fixed_ratio": metadata.get("sampling_enforce_fixed_ratio"),
+            "imbalance_strategy": metadata.get("imbalance_strategy"),
+            "class_weight_used": metadata.get("class_weight_used"),
+            "sample_weight_used": metadata.get("sample_weight_used"),
+            "negative_sampling_used": metadata.get("negative_sampling_used"),
+            "baseline_name": metadata.get("baseline_name"),
+            "sampling_fix_applied": metadata.get("sampling_fix_applied"),
+            "previous_baselines_invalidated_by_sampling_bias": metadata.get(
+                "previous_baselines_invalidated_by_sampling_bias"
+            ),
+            "human_approval_confirmed": metadata.get("human_approval_confirmed"),
             "strict_leakage_prevention": metadata.get("strict_leakage_prevention"),
             "geo_ablation_enabled": metadata.get("geo_ablation_enabled"),
             "feature_exclusions": ",".join(metadata.get("feature_exclusions", [])),
@@ -210,6 +223,12 @@ class MlflowTrackingService:
             cost = metadata.get("operational_costs", {}).get(split)
             if cost is not None:
                 metrics[f"{split}_business_cost"] = cost
+
+        for key, value in (
+            metadata.get("model_selection", {}).get("best_trial_breakdown", {})
+        ).items():
+            if self._is_number(value):
+                metrics[f"optuna_best_{key}"] = value
 
         dataset = metadata.get("dataset", {})
         for key in (
@@ -247,6 +266,8 @@ class MlflowTrackingService:
             "robustness_status": str(metadata.get("robustness_status", "unknown")),
             "walk_forward_status": str(metadata.get("walk_forward_status", "unknown")),
             "promotion_decision": str(metadata.get("baseline_decision", {}).get("decision")),
+            "baseline_name": str(metadata.get("baseline_name", "unknown")),
+            "sampling_fix_applied": str(metadata.get("sampling_fix_applied", False)).lower(),
             "experiment_fingerprint": str(metadata.get("experiment_fingerprint")),
         }
 

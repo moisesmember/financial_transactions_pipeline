@@ -37,6 +37,7 @@ def write_model_card(
         f"- Threshold strategy: `{metadata['threshold_selection']['strategy']}`",
         f"- Leakage audit: `{leakage_report['status']}`",
         f"- Baseline decision: `{decision['decision']}`",
+        f"- Baseline name: `{metadata.get('baseline_name')}`",
         "",
         "## Metrics",
         "",
@@ -105,6 +106,15 @@ def write_model_review_report(
         f"- Dataset version: `{metadata.get('dataset_version')}`",
         f"- Feature set version: `{metadata.get('feature_set_version')}`",
         f"- Code version: `{metadata.get('code_version')}`",
+        f"- Baseline name: `{metadata.get('baseline_name')}`",
+        "",
+        "## What changed after sampling fix",
+        "",
+        "- A amostragem sequencial anterior foi corrigida.",
+        "- As rodadas antigas nao devem ser usadas como baseline definitivo.",
+        f"- O baseline corrigido `{metadata.get('baseline_name')}` permanece com decisao `{decision['decision']}`.",
+        "- A proxima otimizacao deve focar robustez temporal, falsos negativos OOT e features instaveis.",
+        "- Threshold e Top-K nao podem converter um modelo temporalmente fraco em approved.",
         "",
         "## 3. Main Metrics",
         "",
@@ -259,6 +269,9 @@ def _threshold_lines(payload: dict[str, Any] | None) -> list[str]:
     for name, recommendation in payload.items():
         if recommendation is None:
             lines.append(f"- {name}: not available")
+            continue
+        if not isinstance(recommendation, dict):
+            lines.append(f"- {name}: {recommendation}")
             continue
         lines.append(
             f"- {name}: threshold={recommendation.get('threshold')} | "

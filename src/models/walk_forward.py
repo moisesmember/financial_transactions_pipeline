@@ -24,6 +24,13 @@ def summarize_walk_forward_folds(
     max_recall_drop: float,
 ) -> dict[str, Any]:
     """Summarize temporal fold stability with emphasis on the last and worst fold."""
+    completed = [
+        row
+        for row in completed
+        if row.get("evaluation_status", "valid") == "valid"
+        and row.get("recall") is not None
+        and row.get("pr_auc") is not None
+    ]
     if not completed:
         return {
             "best_fold": None,
@@ -31,9 +38,13 @@ def summarize_walk_forward_folds(
             "mean_recall": None,
             "median_recall": None,
             "std_recall": None,
+            "min_recall": None,
+            "max_recall": None,
             "mean_pr_auc": None,
             "median_pr_auc": None,
             "std_pr_auc": None,
+            "min_pr_auc": None,
+            "max_pr_auc": None,
             "min_recall_fold": None,
             "min_pr_auc_fold": None,
             "last_fold_recall": None,
@@ -42,6 +53,7 @@ def summarize_walk_forward_folds(
             "recall_drop_best_to_worst": None,
             "pr_auc_drop_best_to_worst": None,
             "unstable": False,
+            "instability_score": None,
             "failure_reasons": [],
         }
     recalls = np.array([float(row["recall"]) for row in completed], dtype=float)
@@ -64,6 +76,11 @@ def summarize_walk_forward_folds(
         max(0.0, float(np.median(recalls)) - last_recall)
         + max(0.0, float(np.median(pr_aucs)) - last_pr_auc)
     )
+    instability_score = float(
+        recalls.std(ddof=0)
+        + pr_aucs.std(ddof=0)
+        + 2.0 * last_fold_penalty
+    )
     failure_reasons: list[str] = []
     if worst_recall < min_recall:
         failure_reasons.append("Pior fold com recall abaixo do minimo temporal.")
@@ -79,9 +96,13 @@ def summarize_walk_forward_folds(
         "mean_recall": float(recalls.mean()),
         "median_recall": float(np.median(recalls)),
         "std_recall": float(recalls.std(ddof=0)),
+        "min_recall": float(recalls.min()),
+        "max_recall": float(recalls.max()),
         "mean_pr_auc": float(pr_aucs.mean()),
         "median_pr_auc": float(np.median(pr_aucs)),
         "std_pr_auc": float(pr_aucs.std(ddof=0)),
+        "min_pr_auc": float(pr_aucs.min()),
+        "max_pr_auc": float(pr_aucs.max()),
         "min_recall_fold": float(worst_recall),
         "min_pr_auc_fold": float(worst_pr_auc),
         "last_fold_recall": last_recall,
@@ -91,6 +112,7 @@ def summarize_walk_forward_folds(
         "recall_drop_best_to_worst": float(recall_drop),
         "pr_auc_drop_best_to_worst": float(pr_auc_drop),
         "unstable": bool(failure_reasons),
+        "instability_score": instability_score,
         "failure_reasons": failure_reasons,
     }
 
@@ -143,12 +165,16 @@ class WalkForwardValidator:
             train_positives_before_sampling = int(
                 train[self.settings.target_column].eq(1).sum()
             )
-            if self.settings.negative_sampling_enabled:
+            if self.settings.negative_sampling_enabled and self.settings.imbalance_strategy in {
+                "negative_sampling",
+                "negative_sampling_plus_class_weight",
+            }:
                 train = TrainingDataLimiter(
                     self.settings.training_max_rows,
                     negative_positive_ratio=self.settings.training_negative_positive_ratio,
                     random_state=self.settings.random_state + fold_number,
                     period="M" if self.settings.negative_sampling_by == "month" else "Y",
+                    enforce_fixed_ratio=self.settings.sampling_enforce_fixed_ratio,
                 ).apply(
                     train,
                     target_column=self.settings.target_column,
@@ -190,14 +216,18 @@ class WalkForwardValidator:
                     "status": "completed",
                     "train_rows": int(len(train)),
                     "train_rows_before_sampling": int(train_rows_before_sampling),
+                    "train_min_date": train[time_column].min().isoformat(),
+                    "train_max_date": train[time_column].max().isoformat(),
                     "train_positive_count_before_sampling": train_positives_before_sampling,
                     "train_positive_count_after_sampling": int(y_train.sum()),
+                    "train_positive_count": int(y_train.sum()),
                     "validation_rows": int(len(validation)),
                     "validation_time_min": validation[time_column].min().isoformat(),
                     "validation_time_max": validation[time_column].max().isoformat(),
                     "threshold": threshold,
                     "fraud_rate": float(y_validation.mean()),
                     "positive_count": int(y_validation.sum()),
+                    "validation_positive_count": int(y_validation.sum()),
                     "alerts": int(metrics["alerts"]),
                     "business_cost": float(business_cost),
                     "duration_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
@@ -205,7 +235,10 @@ class WalkForwardValidator:
                 }
             )
         warnings = []
-        completed = [row for row in rows if row["status"] == "completed"]
+        evaluated = [row for row in rows if row["status"] == "completed"]
+        completed = [
+            row for row in evaluated if row.get("evaluation_status") == "valid"
+        ]
         summary = summarize_walk_forward_folds(
             completed,
             min_recall=self.settings.promotion_min_walk_forward_recall,
@@ -224,6 +257,17 @@ class WalkForwardValidator:
             "summary": summary,
             "folds": rows,
             "completed_fold_count": len(completed),
+            "valid_fold_count": len(completed),
+            "single_class_fold_count": sum(
+                row.get("evaluation_status") in {"no_positive_class", "no_negative_class"}
+                for row in evaluated
+            ),
+            "no_positive_period_count": sum(
+                row.get("evaluation_status") == "no_positive_class" for row in evaluated
+            ),
+            "no_negative_period_count": sum(
+                row.get("evaluation_status") == "no_negative_class" for row in evaluated
+            ),
         }
         return self._write(output_dir, payload)
 
@@ -244,17 +288,37 @@ class WalkForwardValidator:
             f"- Last fold recall: {payload.get('summary', {}).get('last_fold_recall')}",
             f"- Last fold PR-AUC: {payload.get('summary', {}).get('last_fold_pr_auc')}",
             f"- Last fold penalty: {payload.get('summary', {}).get('last_fold_penalty')}",
+            f"- Instability score: {payload.get('summary', {}).get('instability_score')}",
             f"- Recall drop best-to-worst: {payload.get('summary', {}).get('recall_drop_best_to_worst')}",
             "",
             "## Warnings",
             "",
             *[f"- {warning}" for warning in payload.get("warnings", [])],
+            "",
+            "## Folds",
+            "",
+            "| Fold | Train range | Validation range | Train rows | Validation rows | Recall | PR-AUC | Cost |",
+            "|---:|---|---|---:|---:|---:|---:|---:|",
         ]
+        for row in payload.get("folds", []):
+            if row.get("status") != "completed":
+                continue
+            lines.append(
+                f"| {row['fold']} | {row['train_min_date']} to {row['train_max_date']} | "
+                f"{row['validation_time_min']} to {row['validation_time_max']} | "
+                f"{row['train_rows']} | {row['validation_rows']} | "
+                f"{self._format_metric(row.get('recall'))} | "
+                f"{self._format_metric(row.get('pr_auc'))} | {row['business_cost']:.2f} |"
+            )
         (output_dir / self.settings.walk_forward_markdown_filename).write_text(
             "\n".join(lines) + "\n",
             encoding="utf-8",
         )
         return payload
+
+    @staticmethod
+    def _format_metric(value: Any) -> str:
+        return "null" if value is None else f"{float(value):.6f}"
 
     @staticmethod
     def _fold_boundaries(row_count: int, folds: int) -> list[tuple[int, int]]:

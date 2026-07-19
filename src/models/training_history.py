@@ -147,6 +147,11 @@ class TrainingHistoryRegistry:
             "negative_sampling_by": metadata.get("negative_sampling_by"),
             "negative_to_positive_ratio": metadata.get("training_negative_positive_ratio"),
             "sampling_audit_status": metadata.get("sampling_audit_status"),
+            "baseline_name": metadata.get("baseline_name"),
+            "sampling_fix_applied": metadata.get("sampling_fix_applied"),
+            "previous_baselines_invalidated_by_sampling_bias": metadata.get(
+                "previous_baselines_invalidated_by_sampling_bias"
+            ),
             "train_rows": metadata["dataset"]["train_rows"],
             "train_rows_before_negative_sampling": metadata["dataset"].get(
                 "train_rows_before_negative_sampling"

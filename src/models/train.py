@@ -61,5 +61,12 @@ class FraudModelTrainer:
             model_params=model_params,
         )
         logger.info("Treinando modelo %s com %s linhas", selected_model, len(X_train))
-        pipeline.fit(X_train, y_train)
+        if self.settings.imbalance_strategy == "sample_weight":
+            positive_count = int(y_train.eq(1).sum())
+            negative_count = int(y_train.eq(0).sum())
+            positive_weight = negative_count / positive_count if positive_count else 1.0
+            sample_weight = y_train.map({0: 1.0, 1: positive_weight}).to_numpy()
+            pipeline.fit(X_train, y_train, model__sample_weight=sample_weight)
+        else:
+            pipeline.fit(X_train, y_train)
         return pipeline

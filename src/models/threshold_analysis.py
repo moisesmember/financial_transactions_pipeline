@@ -20,6 +20,16 @@ def threshold_grid(start: float, stop: float, step: float) -> np.ndarray:
     return np.round(values, 10)
 
 
+def threshold_at_search_boundary(
+    threshold: float, search_min: float, search_max: float
+) -> bool:
+    """Return whether a validation-selected threshold touches the tested grid edge."""
+    return bool(
+        np.isclose(float(threshold), float(search_min))
+        or np.isclose(float(threshold), float(search_max))
+    )
+
+
 def build_threshold_table(
     y_true: np.ndarray,
     y_score: np.ndarray,

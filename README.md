@@ -455,6 +455,39 @@ python scripts/list_training_history.py --limit 10
 `NEGATIVE_TO_POSITIVE_RATIO=0` desativa somente o teto por razão; o orçamento
 de `TRAINING_MAX_ROWS` continua sendo distribuído entre os meses.
 
+### Baseline após a correção e robustez temporal
+
+As novas execuções são identificadas separadamente das rodadas que sofreram o
+corte cronológico sequencial:
+
+```env
+BASELINE_NAME=baseline_after_sampling_fix
+SAMPLING_FIX_APPLIED=true
+PREVIOUS_BASELINES_INVALIDATED_BY_SAMPLING_BIAS=true
+MODEL_SELECTION_OBJECTIVE=temporal_robustness
+WALK_FORWARD_ENABLED=true
+RUN_GEO_ABLATION=true
+PROMOTE_BASELINE=false
+HUMAN_APPROVAL_CONFIRMED=false
+```
+
+`baseline_after_sampling_fix` é um baseline analítico para comparação, não uma
+aprovação de produção. Uma decisão `approved` exige todos os gates temporais e
+`HUMAN_APPROVAL_CONFIRMED=true`. O Optuna usa folds internos e o último holdout
+de seleção; test e out-of-time permanecem independentes para rejeição.
+
+Além dos relatórios principais, cada execução gera:
+
+- `performance_by_year.csv`, `performance_by_month.csv` e
+  `performance_by_period.md`;
+- `error_attribution_report.md` e `error_attribution_by_group.csv`;
+- `feature_stability_by_period.csv`;
+- `top_k_analysis.csv` e `top_k_analysis.md`;
+- `baseline_after_sampling_fix.json`.
+
+Top-K mede a capacidade operacional de investigação, mas nunca transforma
+sozinho uma decisão `reject` em `candidate` ou `approved`.
+
 ## Avaliação, threshold e baseline
 
 Cada treinamento gera:
@@ -878,3 +911,75 @@ Exemplo de request:
   ]
 }
 ```
+
+## Selecao temporal com elegibilidade (v2)
+
+A selecao nao interpreta estabilidade como qualidade. A formula anterior
+somava componentes de recall/PR-AUC e uma penalidade pequena de dispersao; por
+isso um modelo com desempenho futuro uniformemente ruim ainda podia obter uma
+pontuacao alta. A formula v2 executa duas etapas:
+
+1. aplica gates minimos ao numero de folds validos, pior/ultimo recall, lift de
+   PR-AUC sobre a prevalencia de cada fold, alert rate e quedas temporais;
+2. somente entre trials elegiveis calcula
+   `quality - instability - alert_penalty - cost_penalty`.
+
+O termo de qualidade e:
+
+```text
+0.30 * normalized_min_fold_pr_auc_lift
++ 0.20 * min_fold_recall
++ 0.15 * last_fold_recall
++ 0.15 * normalized_last_fold_pr_auc_lift
++ 0.10 * median_fold_recall
++ 0.10 * normalized_median_fold_pr_auc_lift
+```
+
+O lift usa `fold_pr_auc / fold_positive_rate`. Trials inelegiveis recebem o
+piso `-1e9` e nao podem ser vencedores de familia. Os valores abaixo sao
+criterios experimentais iniciais, nao uma politica definitiva de producao:
+
+```dotenv
+OPTUNA_TRIALS_PER_MODEL=10
+OPTUNA_TIMEOUT_PER_MODEL_SECONDS=3600
+OPTUNA_ENABLE_PRUNING=true
+MIN_VALID_TEMPORAL_FOLDS=3
+MIN_FOLD_RECALL_CANDIDATE=0.05
+MIN_LAST_FOLD_RECALL_CANDIDATE=0.05
+MIN_PR_AUC_LIFT_OVER_RANDOM=1.25
+MAX_TEMPORAL_ALERT_RATE=0.025
+MAX_PR_AUC_TEMPORAL_DROP=0.80
+MAX_RECALL_TEMPORAL_DROP=0.80
+SAMPLING_ENFORCE_FIXED_RATIO=true
+NEGATIVE_TO_POSITIVE_RATIO=50
+IMBALANCE_STRATEGY=negative_sampling
+THRESHOLD_MIN=0.01
+THRESHOLD_MAX=0.99
+THRESHOLD_STEP=0.01
+```
+
+`IMBALANCE_STRATEGY` aceita `negative_sampling`, `class_weight`,
+`sample_weight` e `negative_sampling_plus_class_weight`. A opcao padrao evita
+aplicar class weight junto com negative sampling sem um experimento explicito.
+Razoes 25:1, 50:1, 100:1 e dataset completo devem ser comparadas apenas nos
+folds internos.
+
+Ao executar `python main.py`, sao criados estudos independentes
+`fraud_logistic_regression_search`, `fraud_hist_gradient_boosting_search` e
+`fraud_random_forest_search`. O melhor trial elegivel de cada familia e
+comparado nos mesmos folds; test e out-of-time sao usados uma unica vez depois
+da escolha. O threshold tambem e escolhido depois do modelo, somente na
+validacao, e uma escolha em `0.01` ou `0.99` gera warning explicito.
+
+Meses sem fraude recebem `evaluation_status=no_positive_class`, com `recall`,
+`pr_auc` e `fbeta` nulos. Meses somente com fraude recebem
+`evaluation_status=no_negative_class` e `roc_auc` nulo. Esses valores nao
+entram em medias nem em premios de estabilidade; contagens de folds validos e
+single-class ficam nos relatorios.
+
+Use `objective_score_breakdown.csv/.md` para reproduzir cada score e
+`optuna_study.json` para comparar os vencedores. O arquivo
+`baseline_challenger_comparison.json/.md` registra retrospectivamente o
+HistGradientBoosting como `best_rejected_baseline` e uma regressao logistica
+pior como `rejected_challenger`; um challenger pior em test ou OOT nunca
+substitui esse baseline. Essa comparacao final nao retroalimenta o Optuna.

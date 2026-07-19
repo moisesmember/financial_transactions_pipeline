@@ -381,7 +381,10 @@ class PostgresTrainingHistoryRepository:
         if key not in metadata.tables or not path.exists():
             return
         table = metadata.tables[key]
-        frame = pd.read_csv(path).where(pd.notna, None)
+        try:
+            frame = pd.read_csv(path).where(pd.notna, None)
+        except pd.errors.EmptyDataError:
+            return
         rows = [
             self._supported_values(table, {"run_id": run_id, **record})
             for record in frame.to_dict(orient="records")
@@ -411,12 +414,22 @@ class PostgresTrainingHistoryRepository:
         if key not in metadata.tables or not path.exists():
             return
         table = metadata.tables[key]
-        frame = pd.read_csv(path)
+        try:
+            frame = pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return
         if "split" not in table.c:
             frame = frame.drop_duplicates(subset=["experiment_run_id"], keep="last")
         rows = []
         for record in frame.to_dict(orient="records"):
             record = self._sanitize_database_record(record)
+            # Historical ablation files may contain an informational row when
+            # none of the requested columns existed in that run.  Such rows
+            # intentionally have no metrics and cannot satisfy the relational
+            # table's NOT NULL contract, so keep them in the CSV artifact but
+            # do not materialize them as measured experiments.
+            if record.get("threshold") is None:
+                continue
             record["features_removed"] = self._json_field(record.get("features_removed"), [])
             record["top_features"] = self._json_field(record.get("top_features"), [])
             rows.append(self._supported_values(table, record))
@@ -597,6 +610,7 @@ class PostgresTrainingHistoryRepository:
             self.settings.out_of_time_metrics_filename: "out_of_time_metrics",
             self.settings.model_card_filename: "model_card",
             self.settings.baseline_decision_filename: "baseline_decision",
+            self.settings.baseline_reference_filename: "baseline_after_sampling_fix",
             self.settings.manifest_filename: "manifest",
             self.settings.geo_ablation_filename: "geo_ablation",
             self.settings.robustness_report_filename: "robustness_report_json",
@@ -618,10 +632,19 @@ class PostgresTrainingHistoryRepository:
             self.settings.data_drift_categorical_filename: "data_drift_categorical",
             self.settings.feature_stability_report_filename: "feature_stability_report_json",
             self.settings.feature_stability_markdown_filename: "feature_stability_report_markdown",
+            self.settings.feature_stability_by_period_filename: "feature_stability_by_period",
             self.settings.walk_forward_report_filename: "walk_forward_report_json",
             self.settings.walk_forward_markdown_filename: "walk_forward_report_markdown",
             self.settings.model_review_report_filename: "model_review_report",
             self.settings.threshold_recommendations_filename: "threshold_recommendations",
+            self.settings.error_attribution_report_filename: "error_attribution_report_json",
+            self.settings.error_attribution_markdown_filename: "error_attribution_report_markdown",
+            self.settings.error_attribution_by_group_filename: "error_attribution_by_group",
+            self.settings.performance_by_year_filename: "performance_by_year",
+            self.settings.performance_by_month_filename: "performance_by_month",
+            self.settings.performance_by_period_markdown_filename: "performance_by_period_markdown",
+            self.settings.top_k_analysis_filename: "top_k_analysis",
+            self.settings.top_k_analysis_markdown_filename: "top_k_analysis_markdown",
             self.settings.optuna_trials_filename: "optuna_trials",
             self.settings.optuna_study_filename: "optuna_study",
             self.settings.external_benchmark_filename: "external_benchmark_results",

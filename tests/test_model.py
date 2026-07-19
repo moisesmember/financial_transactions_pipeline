@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 from sklearn import config_context
@@ -16,7 +18,11 @@ from src.models.external_benchmarks import (
     ExternalBenchmarkAdapter,
     ExternalBenchmarkRunner,
 )
-from src.models.optuna_search import OptunaModelSelector, temporal_selection_score
+from src.models.optuna_search import (
+    OptunaModelSelector,
+    temporal_robustness_score,
+    temporal_selection_score,
+)
 from src.models.threshold import find_best_threshold
 from src.models.threshold_analysis import (
     build_cost_scenario_summary,
@@ -41,6 +47,14 @@ def test_model_factory_applies_parameter_overrides() -> None:
     )
 
     assert model.C == 0.25
+
+
+def test_model_factory_supports_native_regularized_candidates() -> None:
+    settings = Settings()
+
+    assert hasattr(ModelFactory(settings).create("logistic_regression_regularized"), "fit")
+    assert hasattr(ModelFactory(settings).create("random_forest_regularized"), "fit")
+    assert hasattr(ModelFactory(settings).create("extra_trees_regularized"), "fit")
 
 
 def test_settings_accept_optional_optuna_models() -> None:
@@ -288,6 +302,26 @@ def test_temporal_selection_score_penalizes_bad_last_window() -> None:
     assert unstable["selection_score"] < stable["selection_score"]
 
 
+def test_temporal_robustness_objective_weights_worst_and_last_windows() -> None:
+    robust = temporal_robustness_score(
+        [
+            {"pr_auc": 0.20, "fraud_rate": 0.01, "metrics": {"recall": 0.70}},
+            {"pr_auc": 0.18, "fraud_rate": 0.01, "metrics": {"recall": 0.65}},
+            {"pr_auc": 0.17, "fraud_rate": 0.01, "metrics": {"recall": 0.60}},
+        ]
+    )
+    collapsing = temporal_robustness_score(
+        [
+            {"pr_auc": 0.20, "fraud_rate": 0.01, "metrics": {"recall": 0.70}},
+            {"pr_auc": 0.01, "fraud_rate": 0.01, "metrics": {"recall": 0.01}},
+            {"pr_auc": 0.02, "fraud_rate": 0.01, "metrics": {"recall": 0.05}},
+        ]
+    )
+
+    assert robust["temporal_robustness_score"] > collapsing["temporal_robustness_score"]
+    assert collapsing["min_fold_recall"] == 0.01
+
+
 def test_optuna_search_executes_each_supported_model_family(tmp_path) -> None:
     row_count = 120
     frame = pd.DataFrame(
@@ -307,7 +341,14 @@ def test_optuna_search_executes_each_supported_model_family(tmp_path) -> None:
             "hist_gradient_boosting",
         ),
         optuna_trials=3,
+        optuna_trials_per_model=1,
         optuna_timeout_seconds=60,
+        min_pr_auc_lift_over_random=0.0,
+        min_fold_recall_candidate=0.0,
+        min_last_fold_recall_candidate=0.0,
+        max_temporal_alert_rate=1.0,
+        max_pr_auc_temporal_drop=1.0,
+        max_recall_temporal_drop=1.0,
         threshold_analysis_start=0.10,
         threshold_analysis_stop=0.90,
         threshold_analysis_step=0.20,
@@ -330,4 +371,22 @@ def test_optuna_search_executes_each_supported_model_family(tmp_path) -> None:
         "hist_gradient_boosting",
     }
     assert set(trials["state"]) == {"COMPLETE"}
+    assert len(trials) == 3
+    assert set(trials["study_name"]) == {
+        "fraud_logistic_regression_search",
+        "fraud_random_forest_search",
+        "fraud_hist_gradient_boosting_search",
+    }
+    assert {
+        "eligibility_status",
+        "ineligibility_reasons",
+        "raw_temporal_score",
+        "final_objective_score",
+        "min_fold_pr_auc_lift",
+        "last_fold_pr_auc_lift",
+    } <= set(trials.columns)
+    study = json.loads((tmp_path / "study.json").read_text(encoding="utf-8"))
+    assert study["optuna_uses_test"] is False
+    assert study["optuna_uses_out_of_time"] is False
+    assert study["threshold_selected_after_model"] is True
     assert result.model_name in set(trials["model_name"])

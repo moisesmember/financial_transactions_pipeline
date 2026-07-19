@@ -19,6 +19,7 @@ def temporal_stratified_negative_sampling(
     negative_to_positive_ratio: int | None = None,
     period: str = "M",
     random_state: int = 42,
+    enforce_fixed_ratio: bool = False,
 ) -> pd.DataFrame:
     """Preserve all positives and sample only negatives across temporal strata.
 
@@ -70,8 +71,22 @@ def temporal_stratified_negative_sampling(
             negative_budget,
             positive_count * negative_to_positive_ratio,
         )
-    if max_rows is not None:
+    fixed_ratio_feasible = bool(
+        enforce_fixed_ratio
+        and negative_to_positive_ratio is not None
+        and len(negatives) >= positive_count * negative_to_positive_ratio
+    )
+    if max_rows is not None and not fixed_ratio_feasible:
         negative_budget = min(negative_budget, max_rows - positive_count)
+    elif (
+        max_rows is not None
+        and positive_count + negative_budget > max_rows
+    ):
+        logger.warning(
+            "TRAINING_MAX_ROWS excedido para preservar a razao fixa | limite=%d | requerido=%d",
+            max_rows,
+            positive_count + negative_budget,
+        )
 
     sampled_negatives = _sample_negatives_by_period(
         negatives,
@@ -169,11 +184,13 @@ class TrainingDataLimiter:
         negative_positive_ratio: int | None = 100,
         random_state: int = 42,
         period: str = "M",
+        enforce_fixed_ratio: bool = False,
     ) -> None:
         self.max_rows = max_rows
         self.negative_positive_ratio = negative_positive_ratio
         self.random_state = random_state
         self.period = period
+        self.enforce_fixed_ratio = enforce_fixed_ratio
 
     def apply(
         self,
@@ -193,6 +210,7 @@ class TrainingDataLimiter:
             negative_to_positive_ratio=self.negative_positive_ratio,
             period=self.period,
             random_state=self.random_state,
+            enforce_fixed_ratio=self.enforce_fixed_ratio,
         )
 
     @staticmethod

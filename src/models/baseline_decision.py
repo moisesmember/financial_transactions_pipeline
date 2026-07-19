@@ -35,6 +35,16 @@ class BaselineDecisionService:
         validation = metadata["validation_metrics"]
         test = metadata["test_metrics"]
 
+        if float(test.get("recall", 0.0)) < self.settings.promotion_min_recall:
+            blocking_reasons.append("Recall de teste abaixo do minimo operacional.")
+        test_positive_rate = (metadata.get("dataset") or {}).get("test_positive_rate")
+        if (
+            test_positive_rate is not None
+            and float(test.get("pr_auc", 0.0))
+            <= float(test_positive_rate) * self.settings.promotion_min_oot_pr_auc_lift
+        ):
+            blocking_reasons.append("PR-AUC de teste nao supera o baseline aleatorio exigido.")
+
         if audit_status == "fail":
             blocking_reasons.append("A auditoria de leakage possui falhas bloqueantes.")
         if oot is None:
@@ -109,18 +119,44 @@ class BaselineDecisionService:
 
         baseline = self._load_current_baseline()
         if baseline:
-            baseline_test = baseline.get("test_metrics", {})
-            baseline_pr_auc = baseline_test.get("pr_auc")
-            if baseline_pr_auc is not None and float(test["pr_auc"]) < float(baseline_pr_auc):
-                blocking_reasons.append("PR-AUC de teste inferior ao baseline atual.")
-            baseline_cost = self._cost_per_record(baseline_test)
-            candidate_cost = self._cost_per_record(test)
-            if (
-                baseline_cost is not None
-                and candidate_cost is not None
-                and candidate_cost > baseline_cost * (1 + self.settings.promotion_max_cost_increase)
+            for split_name, candidate_metrics in (
+                ("validation", validation),
+                ("test", test),
+                ("out_of_time", out_of_time),
             ):
-                blocking_reasons.append("Custo por registro superior ao limite do baseline.")
+                baseline_metrics = baseline.get(f"{split_name}_metrics", {})
+                if not baseline_metrics or not candidate_metrics:
+                    continue
+                for metric in ("pr_auc", "recall", "precision"):
+                    baseline_value = baseline_metrics.get(metric)
+                    candidate_value = candidate_metrics.get(metric)
+                    if (
+                        baseline_value is not None
+                        and candidate_value is not None
+                        and float(candidate_value) < float(baseline_value)
+                    ):
+                        blocking_reasons.append(
+                            f"{metric} de {split_name} inferior ao baseline atual."
+                        )
+                if (
+                    baseline_metrics.get("fp") is not None
+                    and candidate_metrics.get("fp") is not None
+                    and float(candidate_metrics["fp"]) > float(baseline_metrics["fp"])
+                ):
+                    blocking_reasons.append(
+                        f"Falsos positivos de {split_name} superiores ao baseline atual."
+                    )
+                baseline_cost = self._cost_per_record(baseline_metrics)
+                candidate_cost = self._cost_per_record(candidate_metrics)
+                if (
+                    baseline_cost is not None
+                    and candidate_cost is not None
+                    and candidate_cost
+                    > baseline_cost * (1 + self.settings.promotion_max_cost_increase)
+                ):
+                    blocking_reasons.append(
+                        f"Custo por registro de {split_name} superior ao limite do baseline."
+                    )
 
         if blocking_reasons:
             decision = "reject"
@@ -128,9 +164,13 @@ class BaselineDecisionService:
         elif warning_reasons:
             decision = "pending_review"
             recommendations.append("Exigir aprovacao humana e justificativa antes de qualquer promocao.")
-        elif self.settings.promote_baseline:
+        elif self.settings.promote_baseline and self.settings.human_approval_confirmed:
             decision = "approved"
             recommendations.append("Modelo apto para promocao conforme gates configurados.")
+        elif self.settings.promote_baseline:
+            decision = "pending_review"
+            warning_reasons.append("Aprovacao humana explicita ainda nao foi registrada.")
+            recommendations.append("Registrar aprovacao humana antes da promocao.")
         else:
             decision = "candidate"
             recommendations.append("Candidato tecnicamente aprovado; promocao depende de aprovacao humana.")
