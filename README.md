@@ -1,5 +1,24 @@
 # Detecção de Fraude em Transações Financeiras
 
+## Visão de portfólio
+
+**Problema:** avaliar detecção de fraude considerando a ordem temporal dos dados e o custo de erros de decisão.
+
+**Solução documentada:** pipeline modular de preparação, seleção de modelos com Optuna, avaliação, ajuste de limiar e disponibilização de predições por API e batch.
+
+**Estágio:** projeto experimental. Para avaliar o desempenho, reproduza o experimento com a mesma versão dos dados, splits e configuração; a presença de um pipeline não comprova prontidão para produção.
+
+### Guia de leitura
+
+- [Princípios de modelagem](#princípios-de-modelagem): decisões de preparação e treinamento.
+- [Avaliação, threshold e baseline](#avaliação-threshold-e-baseline): critérios para comparar modelos e políticas de decisão.
+- [Como executar](#como-executar): reprodução do fluxo.
+- [Testes](tests): evidências automatizadas sobre o comportamento implementado.
+
+### Evidências para uma apresentação profissional
+
+Ao publicar um experimento, apresente baseline e modelo no mesmo conjunto de avaliação, com precision, recall, PR-AUC, matriz de confusão e custo da política de decisão. Registre também versão dos dados, janela temporal, limiar e configuração. Só inclua ganhos quantitativos obtidos e reproduzidos.
+
 Projeto Python modular para treino, avaliação, ajuste de threshold e serving de um modelo de detecção de fraude usando o dataset do Kaggle "Financial Transactions Dataset: Analytics".
 
 A seleção principal usa Optuna para comparar famílias e hiperparâmetros sklearn
